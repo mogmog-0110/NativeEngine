@@ -1,12 +1,13 @@
 #include "world.hpp"
 
 #include "contact.hpp"
+#include "narrowphase.hpp"
 
 namespace ne {
 
 void World::step() {
     integrate();
-    collideSpheres();
+    collide();
     if (box.periodic)
         wrapPositions();
     else
@@ -30,34 +31,50 @@ void World::integrate() {
     }
 }
 
-// Sphere-sphere hard contact. O(N^2) with minimum-image separation; a cell list
+// All-pairs hard contact. O(N^2) with minimum-image separation; a cell list
 // replaces this once correctness is established. Iterating i<j in index order
-// keeps the impulse application deterministic.
-void World::collideSpheres() {
+// keeps the impulse application deterministic. Cylinder-cylinder narrow phase
+// (GJK/EPA) is added in the next increment; here we handle sphere-sphere and
+// sphere-cylinder.
+void World::collide() {
     const size_t n = bodies.size();
     for (size_t i = 0; i < n; ++i) {
         Body& a = bodies[i];
-        if (!a.isSphere()) continue;
         for (size_t j = i + 1; j < n; ++j) {
             Body& b = bodies[j];
-            if (!b.isSphere()) continue;
-
-            V3 d = box.minImage(a.x - b.x);           // b -> a, nearest image
-            double sumR = a.radius + b.radius;
-            double dist2 = d.norm2();
-            if (dist2 >= sumR * sumR || dist2 < 1e-18) continue;
-
-            double dist = std::sqrt(dist2);
-            V3 normal = d / dist;                       // unit normal, b -> a
             if (a.invMass + b.invMass <= 0.0) continue;
 
-            // Contact point is on the line of centres; the lever arms are along
-            // +-normal so this reduces to a central impulse (no spin), but it
-            // goes through the same general resolver the cylinders will use.
-            V3 ra = normal * (-a.radius);
-            V3 rb = normal * (b.radius);
-            resolveContact(a, b, ra, rb, normal, restitution);
-            correctPenetration(a, b, normal, sumR - dist, contactBeta);
+            if (a.isSphere() && b.isSphere()) {
+                V3 d = box.minImage(a.x - b.x);           // b -> a, nearest image
+                double sumR = a.radius + b.radius;
+                double dist2 = d.norm2();
+                if (dist2 >= sumR * sumR || dist2 < 1e-18) continue;
+                double dist = std::sqrt(dist2);
+                V3 normal = d / dist;                      // b -> a
+                // Contact on the line of centres: lever arms along +-normal, so
+                // no spin, but through the same general resolver.
+                resolveContact(a, b, normal * (-a.radius), normal * (b.radius),
+                               normal, restitution);
+                correctPenetration(a, b, normal, sumR - dist, contactBeta);
+            } else if (a.isSphere() != b.isSphere()) {
+                // One sphere, one cylinder. Resolve as (sphere = A, cylinder = B)
+                // so the contact normal points from the cylinder toward the sphere.
+                Body& sph = a.isSphere() ? a : b;
+                Body& cyl = a.isSphere() ? b : a;
+                Contact c = sphereVsCylinder(sph, cyl, box);
+                if (!c.hit) continue;
+                V3 rSph = c.point - sph.x;
+                V3 rCyl = box.minImage(c.point - cyl.x);
+                resolveContact(sph, cyl, rSph, rCyl, c.normal, restitution);
+                // Positional correction along the (off-centre) contact normal.
+                double invSum = sph.invMass + cyl.invMass;
+                if (invSum > 0.0) {
+                    V3 corr = c.normal * (contactBeta * c.overlap / invSum);
+                    sph.x += corr * sph.invMass;
+                    cyl.x -= corr * cyl.invMass;
+                }
+            }
+            // (cylinder-cylinder handled in the GJK/EPA increment)
         }
     }
 }

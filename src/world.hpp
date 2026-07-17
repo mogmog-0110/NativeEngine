@@ -35,7 +35,7 @@ public:
 
 private:
     void integrate();
-    void collideSpheres();
+    void collide();        // all shape pairs
     void applyWalls();     // reflective boundary
     void wrapPositions();  // periodic boundary
 };

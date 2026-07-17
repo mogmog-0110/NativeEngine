@@ -5,6 +5,7 @@
 
 #include "world.hpp"
 #include "contact.hpp"
+#include "narrowphase.hpp"
 
 namespace ne {
 namespace {
@@ -247,6 +248,68 @@ void test_offcentre_impulse() {
           "off-centre: spin is about the expected (z) axis");
 }
 
+// ---------------------------------------------------------------------------
+// 9. Sphere-vs-flat-cap-cylinder narrow phase: the three exterior regions
+//    (cap face, side, rim) give the right normal and overlap.
+// ---------------------------------------------------------------------------
+void test_sphere_cylinder_geometry() {
+    Box box; box.periodic = false; box.half = 100.0;
+    Body cyl = makeCylinder(0, V3{0, 0, 0}, Q{1, 0, 0, 0}, 1.0, 4.0, 1.0); // r=1, h=2
+
+    // Cap: sphere above the +Y cap centre, just overlapping.
+    Body s1 = makeSphere(1, V3{0, 2.5, 0}, 1.0, 1.0);
+    Contact c1 = sphereVsCylinder(s1, cyl, box);
+    check(c1.hit && closeV(c1.normal, V3{0, 1, 0}, 1e-9) && close(c1.overlap, 0.5, 1e-9),
+          "sphere-cyl: cap-face contact (normal +Y, overlap 0.5)");
+
+    // Side: sphere beside the barrel.
+    Body s2 = makeSphere(2, V3{1.5, 0, 0}, 1.0, 1.0);
+    Contact c2 = sphereVsCylinder(s2, cyl, box);
+    check(c2.hit && closeV(c2.normal, V3{1, 0, 0}, 1e-9) && close(c2.overlap, 0.5, 1e-9),
+          "sphere-cyl: side contact (normal +X, overlap 0.5)");
+
+    // Rim: sphere off the +X/+Y edge; closest point is the rim (1,2,0).
+    Body s3 = makeSphere(3, V3{1.5, 2.5, 0}, 1.0, 1.0);
+    Contact c3 = sphereVsCylinder(s3, cyl, box);
+    double expDist = std::sqrt(0.25 + 0.25);
+    check(c3.hit && closeV(c3.point, V3{1, 2, 0}, 1e-9) &&
+              close(c3.overlap, 1.0 - expDist, 1e-9),
+          "sphere-cyl: rim contact (closest point on the cap edge)");
+
+    // No contact: clearly outside.
+    Body s4 = makeSphere(4, V3{0, 4.0, 0}, 1.0, 1.0);
+    check(!sphereVsCylinder(s4, cyl, box).hit, "sphere-cyl: no contact when separated");
+}
+
+// ---------------------------------------------------------------------------
+// 10. Sphere-vs-cylinder dynamics through the world: an off-axis strike
+//     conserves momentum + angular momentum + energy and spins the cylinder.
+// ---------------------------------------------------------------------------
+void test_sphere_cylinder_dynamics() {
+    World w;
+    w.box.half = 100.0; w.box.periodic = false;
+    w.restitution = 1.0; w.dt = 1e-3;
+    Body cyl = makeCylinder(0, V3{0, 0, 0}, Q{1, 0, 0, 0}, 1.0, 4.0, 1.0);
+    Body sph = makeSphere(1, V3{3.0, 1.5, 0}, 1.0, 1.0);   // off the COM, beside barrel
+    sph.v = V3{-2.0, 0, 0};
+    w.bodies = {cyl, sph};
+
+    auto P = [&] {
+        V3 p; for (auto& b : w.bodies) p += b.v * (1.0 / b.invMass); return p; };
+    auto Lm = [&] {
+        V3 l; for (auto& b : w.bodies) { l += b.x.cross(b.v * (1.0 / b.invMass));
+                                         l += b.angularMomentum(); } return l; };
+    auto E = [&] { double e = 0; for (auto& b : w.bodies) e += b.kinetic(); return e; };
+
+    V3 p0 = P(), l0 = Lm(); double e0 = E();
+    for (int s = 0; s < 8000; ++s) w.step();
+
+    check(closeV(P(), p0, 1e-7), "sphere-cyl dynamics: linear momentum conserved");
+    check(closeV(Lm(), l0, 1e-6), "sphere-cyl dynamics: angular momentum conserved");
+    check(std::fabs(E() - e0) / e0 < 1e-4, "sphere-cyl dynamics: energy conserved (e=1)");
+    check(w.bodies[0].w.norm() > 1e-4, "sphere-cyl dynamics: cylinder acquires spin");
+}
+
 }  // namespace
 
 int runSelftest() {
@@ -259,6 +322,8 @@ int runSelftest() {
     test_determinism();
     test_periodic_conservation();
     test_offcentre_impulse();
+    test_sphere_cylinder_geometry();
+    test_sphere_cylinder_dynamics();
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
