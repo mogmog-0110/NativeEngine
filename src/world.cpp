@@ -4,6 +4,7 @@
 #include "narrowphase.hpp"
 #include "epa.hpp"
 #include "detect.hpp"
+#include "manifold.hpp"
 
 #include <vector>
 
@@ -81,15 +82,28 @@ void World::collide() {
             if (a.invMass + b.invMass <= 0.0) continue;
             Contact c = detectContact(a, b, box);
             if (!c.hit) continue;
-            Constraint k;
-            k.i = i; k.j = j; k.n = c.normal; k.overlap = c.overlap;
-            k.rA = box.minImage(c.point - a.x);
-            k.rB = box.minImage(c.point - b.x);
-            // Restitution bias from the approach speed at contact.
-            V3 vc = (a.v + a.w.cross(k.rA)) - (b.v + b.w.cross(k.rB));
-            double vn = vc.dot(k.n);
-            k.restBias = (vn < -kRestitutionSlop) ? -restitution * vn : 0.0;
-            cons.push_back(k);
+
+            // Gather contact points: a multi-point clipping manifold for box-box
+            // (so boxes rest flat and stack), otherwise the single narrow-phase
+            // point. Each point becomes its own constraint sharing the normal.
+            V3 pts[4]; double deps[4]; int npts = 0;
+            if (a.shape == Shape::Box && b.shape == Shape::Box) {
+                Manifold mf = boxBoxManifold(a, b, c.normal, box);
+                for (int p = 0; p < mf.count; ++p) { pts[p] = mf.point[p]; deps[p] = mf.depth[p]; }
+                npts = mf.count;
+            }
+            if (npts == 0) { pts[0] = c.point; deps[0] = c.overlap; npts = 1; }
+
+            for (int p = 0; p < npts; ++p) {
+                Constraint k;
+                k.i = i; k.j = j; k.n = c.normal; k.overlap = deps[p];
+                k.rA = box.minImage(pts[p] - a.x);
+                k.rB = box.minImage(pts[p] - b.x);
+                V3 vc = (a.v + a.w.cross(k.rA)) - (b.v + b.w.cross(k.rB));
+                double vn = vc.dot(k.n);
+                k.restBias = (vn < -kRestitutionSlop) ? -restitution * vn : 0.0;
+                cons.push_back(k);
+            }
         }
     }
 

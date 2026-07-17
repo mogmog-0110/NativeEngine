@@ -600,6 +600,46 @@ void test_resting() {
     check(y > 0.5, "resting: sphere does not sink through the static floor");
 }
 
+// ---------------------------------------------------------------------------
+// 19. Box-box manifold: a box rests FLAT on a static floor (does not tip) and a
+//     two-box stack stays stacked. Impossible with single-point contact.
+// ---------------------------------------------------------------------------
+void test_stacking() {
+    // A box dropped flat onto a static floor should settle flat, not tip.
+    {
+        PhysicsWorld pw;
+        pw.setBox(1e6, false);
+        pw.setTimestep(1.0 / 240.0);
+        pw.setGravity(V3{0, -10, 0});
+        pw.setRestitution(0.0);
+        pw.setFriction(0.5);
+        pw.makeStatic(pw.addBox(V3{0, -1, 0}, Q{1, 0, 0, 0}, V3{20, 1, 20}, 1.0)); // top y=0
+        BodyId bx = pw.addBox(V3{0, 1.6, 0}, Q{1, 0, 0, 0}, V3{1, 1, 1}, 1.0);      // falls to y=1
+        for (int s = 0; s < 3000; ++s) pw.step();
+        double y = pw.position(bx).y;
+        double spin = pw.angularVelocity(bx).norm();
+        check(y > 0.9 && y < 1.15, "stacking: box settles flat at rest height");
+        check(spin < 0.1, "stacking: box does NOT tip (angular velocity ~0)");
+    }
+    // Two boxes stacked stay stacked (upper near y=3, both quiet).
+    {
+        PhysicsWorld pw;
+        pw.setBox(1e6, false);
+        pw.setTimestep(1.0 / 240.0);
+        pw.setGravity(V3{0, -10, 0});
+        pw.setRestitution(0.0);
+        pw.setFriction(0.6);
+        pw.makeStatic(pw.addBox(V3{0, -1, 0}, Q{1, 0, 0, 0}, V3{20, 1, 20}, 1.0)); // top y=0
+        BodyId lo = pw.addBox(V3{0, 1.05, 0}, Q{1, 0, 0, 0}, V3{1, 1, 1}, 1.0);
+        BodyId hi = pw.addBox(V3{0, 3.10, 0}, Q{1, 0, 0, 0}, V3{1, 1, 1}, 1.0);
+        for (int s = 0; s < 4000; ++s) pw.step();
+        double yl = pw.position(lo).y, yh = pw.position(hi).y;
+        check(yl > 0.85 && yl < 1.2, "stacking: lower box rests on floor (~y=1)");
+        check(yh > 2.7 && yh < 3.3, "stacking: upper box rests on lower (~y=3)");
+        check(pw.velocity(hi).norm() < 0.3, "stacking: stack is at rest");
+    }
+}
+
 }  // namespace
 
 int runSelftest() {
@@ -622,6 +662,7 @@ int runSelftest() {
     test_gravity();
     test_physics_world();
     test_resting();
+    test_stacking();
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
