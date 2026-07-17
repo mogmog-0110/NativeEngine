@@ -31,12 +31,12 @@ Keep both as invariants when adding the features below.
 
 ### Tier 1 — game table stakes (MitiruEngine's schema/components require these)
 The `PhysicsTrait`/`RigidBodyComponent` fields that today have no runtime effect:
-- **Per-body material** friction/restitution + combine modes — global-only now → **#20**
-- **Linear/angular damping** per body — component field, unused → **#21**
+- ~~**Per-body material** friction/restitution + combine modes~~ ✅ done (#20)
+- ~~**Linear/angular damping** per body~~ ✅ done (#21)
+- ~~**Collision layers + masks**~~ ✅ done (#23)
+- ~~**Body userData** (body → ECS entity)~~ ✅ done (#24)
 - **Kinematic bodies** (script-driven, infinite mass, imparts velocity) — only
   static/dynamic exist → **#22**
-- **Collision layers + masks** — schema `collisionLayer/mask` ignored at runtime → **#23**
-- **Body userData** (body → ECS entity) to route events → **#24**
 - **Triggers/sensors** + enter/stay/exit — `isTrigger` has no real semantics → **#25**
 - **Contact events begin/stay/end** — callback is per-frame, no transitions → **#26**
 
