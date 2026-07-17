@@ -717,6 +717,56 @@ void test_broadphase() {
     check(e == 0.0, "broadphase: max position difference is exactly zero");
 }
 
+// ---------------------------------------------------------------------------
+// 22. Distance joints: a rigid rod keeps a pendulum's length constant while it
+//     swings; a spring-damper settles at the stretched equilibrium.
+// ---------------------------------------------------------------------------
+void test_joints() {
+    // Rigid pendulum: bob hangs from a static anchor by a rigid rod of length 3.
+    {
+        PhysicsWorld pw;
+        pw.setBox(1e6, false);
+        pw.setTimestep(1.0 / 240.0);
+        pw.setGravity(V3{0, -10, 0});
+        BodyId anchor = pw.makeStatic(pw.addSphere(V3{0, 5, 0}, 0.1, 1.0));
+        BodyId bob = pw.addSphere(V3{3, 5, 0}, 1.0, 1.0);   // 3 to the side
+        pw.addDistanceJoint(anchor, bob, V3{0, 0, 0}, V3{0, 0, 0}, 3.0);  // rigid
+
+        double maxErr = 0, minY = 5.0;
+        for (int s = 0; s < 2000; ++s) {
+            pw.step();
+            double len = (pw.position(bob) - pw.position(anchor)).norm();
+            maxErr = std::max(maxErr, std::fabs(len - 3.0));
+            minY = std::min(minY, pw.position(bob).y);
+        }
+        check(maxErr < 0.15, "joint: rigid rod keeps pendulum length ~constant");
+        check(minY < 3.0, "joint: pendulum actually swings down under gravity");
+    }
+    // Spring: bob hangs on a spring; settles where k*(dist-rest) = m*g.
+    {
+        PhysicsWorld pw;
+        pw.setBox(1e6, false);
+        pw.setTimestep(1.0 / 240.0);
+        pw.setGravity(V3{0, -10, 0});
+        BodyId anchor = pw.makeStatic(pw.addSphere(V3{0, 5, 0}, 0.1, 1.0));
+        BodyId bob = pw.addSphere(V3{0, 3, 0}, 1.0, 1.0);   // 2 below
+        double m = 1.0 / 1.0;   // density 1, r=1 -> mass 4/3 pi; use actual
+        (void)m;
+        double k = 200.0;
+        pw.addDistanceJoint(anchor, bob, V3{0, 0, 0}, V3{0, 0, 0}, 2.0, k, 20.0);
+
+        for (int s = 0; s < 6000; ++s) pw.step();
+        double len = (pw.position(bob) - pw.position(anchor)).norm();
+        double mass = 1.0 / 1.0;   // recompute exact below
+        // exact bob mass = density * 4/3 pi r^3 = 4.18879
+        mass = 4.18879;
+        double expectedStretch = mass * 10.0 / k;    // k*x = m g
+        check(std::fabs((len - 2.0) - expectedStretch) < 0.05,
+              "joint: spring settles at the gravity-balanced stretch");
+        check(pw.velocity(bob).norm() < 0.1, "joint: damped spring comes to rest");
+    }
+}
+
 }  // namespace
 
 int runSelftest() {
@@ -742,6 +792,7 @@ int runSelftest() {
     test_stacking();
     test_sleeping();
     test_broadphase();
+    test_joints();
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

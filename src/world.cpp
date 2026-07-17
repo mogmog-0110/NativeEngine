@@ -33,13 +33,66 @@ constexpr double kRestitutionSlop = 0.5;
 }  // namespace
 
 void World::step() {
+    applyJointForces();     // spring joints add forces before integration
     integrate();
     collide();
+    solveRigidJoints(8);    // bilateral distance constraints
     if (box.periodic)
         wrapPositions();
     else
         applyWalls();
     if (sleepEnabled) updateSleep();
+}
+
+// Spring-damper distance joints: F = -k (dist - rest) - c (relative speed) along
+// the anchor line, applied at each anchor (so it also torques the bodies).
+void World::applyJointForces() {
+    for (const DistanceJoint& j : distanceJoints) {
+        if (j.stiffness <= 0.0) continue;                 // rigid ones are impulse-solved
+        Body& a = bodies[j.a];
+        Body& b = bodies[j.b];
+        V3 wa = a.x + a.q.rotate(j.localA);
+        V3 wb = b.x + b.q.rotate(j.localB);
+        V3 d = box.minImage(wa - wb);
+        double dist = d.norm();
+        if (dist < 1e-9) continue;
+        V3 nrm = d / dist;
+        V3 rA = wa - a.x, rB = box.minImage(wb - b.x);
+        V3 vrel = (a.v + a.w.cross(rA)) - (b.v + b.w.cross(rB));
+        double vn = vrel.dot(nrm);
+        double f = -j.stiffness * (dist - j.rest) - j.damping * vn;
+        V3 F = nrm * f;
+        a.force += F;  a.torque += rA.cross(F);
+        b.force -= F;  b.torque -= rB.cross(F);
+    }
+}
+
+// Rigid distance joints: a bilateral velocity constraint (impulse may be either
+// sign) with a Baumgarte bias that removes the length error over time.
+void World::solveRigidJoints(int iterations) {
+    for (int it = 0; it < iterations; ++it) {
+        for (const DistanceJoint& j : distanceJoints) {
+            if (j.stiffness > 0.0) continue;
+            Body& a = bodies[j.a];
+            Body& b = bodies[j.b];
+            V3 wa = a.x + a.q.rotate(j.localA);
+            V3 wb = b.x + b.q.rotate(j.localB);
+            V3 d = box.minImage(wa - wb);
+            double dist = d.norm();
+            if (dist < 1e-9) continue;
+            V3 nrm = d / dist;
+            V3 rA = wa - a.x, rB = box.minImage(wb - b.x);
+            double K = effMass(a, b, rA, rB, nrm);
+            if (K <= 1e-18) continue;
+            V3 vrel = (a.v + a.w.cross(rA)) - (b.v + b.w.cross(rB));
+            double vn = vrel.dot(nrm);
+            double bias = 0.2 * (dist - j.rest) / dt;     // Baumgarte length correction
+            double dj = -(vn + bias) / K;                 // bilateral: no clamp
+            V3 J = nrm * dj;
+            a.v += J * a.invMass; a.w += a.applyInvInertiaWorld(rA.cross(J));
+            b.v -= J * b.invMass; b.w -= b.applyInvInertiaWorld(rB.cross(J));
+        }
+    }
 }
 
 void World::wake(Body& b) {

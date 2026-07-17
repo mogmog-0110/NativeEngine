@@ -76,8 +76,29 @@ public:
         slot_.erase(it);
     }
 
+    // --- joints ---
+    // A distance joint (rigid rod / rope when stiffness==0, else a spring-damper)
+    // between two bodies at local anchors. Stored by handle so it stays valid
+    // across body removal; anchor to a fixed point by joining to a static body.
+    void addDistanceJoint(BodyId a, BodyId b, const V3& localA, const V3& localB,
+                          double rest, double stiffness = 0.0, double damping = 0.0) {
+        joints_.push_back({a, b, localA, localB, rest, stiffness, damping});
+    }
+
     // --- stepping ---
     void step() {
+        // Resolve handle-based joints to current slot indices (indices move on
+        // removal); drop joints whose bodies were removed.
+        w_.distanceJoints.clear();
+        for (const FacadeJoint& fj : joints_) {
+            auto ia = slot_.find(fj.a), ib = slot_.find(fj.b);
+            if (ia == slot_.end() || ib == slot_.end()) continue;
+            DistanceJoint dj;
+            dj.a = ia->second; dj.b = ib->second;
+            dj.localA = fj.localA; dj.localB = fj.localB;
+            dj.rest = fj.rest; dj.stiffness = fj.stiffness; dj.damping = fj.damping;
+            w_.distanceJoints.push_back(dj);
+        }
         w_.step();
         if (onContact_) emitContacts();
     }
@@ -122,6 +143,13 @@ private:
     std::unordered_map<BodyId, std::size_t> slot_;  // handle -> index
     BodyId next_ = 1;                               // 0 reserved for "invalid"
     std::function<void(const ContactInfo&)> onContact_;
+
+    struct FacadeJoint {
+        BodyId a, b;
+        V3 localA, localB;
+        double rest, stiffness, damping;
+    };
+    std::vector<FacadeJoint> joints_;
 
     BodyId add(Body b) {
         BodyId h = next_++;

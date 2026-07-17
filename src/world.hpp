@@ -10,6 +10,19 @@
 
 namespace ne {
 
+// A distance joint between two bodies at local anchor points. rest is the target
+// separation. stiffness == 0 makes it RIGID (a rod / rope link, solved as a
+// bilateral velocity constraint with Baumgarte length correction); stiffness > 0
+// makes it a spring-damper (applied as a force). Anchoring to a fixed point is
+// done by joining to a static body.
+struct DistanceJoint {
+    std::size_t a = 0, b = 0;
+    V3 localA, localB;
+    double rest = 0.0;
+    double stiffness = 0.0;   // 0 = rigid
+    double damping = 0.0;
+};
+
 // The simulation world: a set of rigid bodies in a (periodic or reflective) box,
 // advanced by a fixed-timestep symplectic integrator with impulse-based hard
 // contact. "Ballistic between contacts" holds because forces are zero unless a
@@ -41,6 +54,7 @@ public:
     bool forceBruteForce = false;
 
     std::vector<Body> bodies;
+    std::vector<DistanceJoint> distanceJoints;
 
     void step();
     static void wake(Body& b);
@@ -53,6 +67,8 @@ public:
 private:
     void integrate();
     void collide();        // all shape pairs
+    void applyJointForces();      // spring joints
+    void solveRigidJoints(int iterations);   // bilateral distance constraints
     // Candidate pairs (sorted, i<j) from the broadphase.
     std::vector<std::pair<std::size_t, std::size_t>> broadphasePairs() const;
     void updateSleep();    // put settled bodies to sleep
