@@ -9,6 +9,7 @@
 #include "gjk.hpp"
 #include "epa.hpp"
 #include "physics_world.hpp"
+#include "character.hpp"
 
 namespace ne {
 namespace {
@@ -1138,6 +1139,26 @@ void test_plane_and_convex() {
     }
 }
 
+void test_character() {
+    PhysicsWorld pw;
+    pw.setBox(1000.0, false); pw.setTimestep(1.0 / 240.0);
+    BodyId floor = pw.addBox(V3{0, -1, 0}, Q{1, 0, 0, 0}, V3{20, 1, 20}, 1.0); pw.makeStatic(floor);
+    BodyId wall = pw.addBox(V3{5, 2, 0}, Q{1, 0, 0, 0}, V3{0.5, 3, 10}, 1.0); pw.makeStatic(wall);
+    (void)floor; (void)wall;
+
+    CharacterController cc(&pw, 0.5, 0.5);      // radius 0.5, half-height 0.5
+    cc.setPosition(V3{0, 1.02, 0});             // standing just above the floor
+    cc.move(V3{0, 0, 0});
+    check(cc.grounded(), "character: grounded on the floor");
+
+    for (int i = 0; i < 200; ++i) cc.move(V3{0.1, 0, 0});   // walk +x into the wall
+    V3 p = cc.position();
+    check(p.x < 4.5, "character: stopped by the wall (no tunneling)");
+    check(p.x > 3.0, "character: reached the wall");
+    check(close(p.y, 1.02, 0.1), "character: stays at floor height while walking");
+    check(cc.grounded(), "character: still grounded after walking");
+}
+
 }  // namespace
 
 int runSelftest() {
@@ -1177,6 +1198,7 @@ int runSelftest() {
     test_queries();
     test_general_joints();
     test_plane_and_convex();
+    test_character();
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

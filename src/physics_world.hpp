@@ -266,6 +266,12 @@ public:
     RayHit sphereCast(const V3& origin, double radius, const V3& dir, double maxDist,
                       std::uint32_t mask = 0xFFFFFFFFu) const;
 
+    // Penetration of a query shape (not in the world) against every solid body it
+    // overlaps: normal points from the world body toward the query (push-out
+    // direction), depth is the overlap. Used by the character controller.
+    struct OverlapHit { BodyId body = kInvalidBody; std::uint64_t userData = 0; V3 normal; double depth = 0.0; };
+    std::vector<OverlapHit> overlapContacts(const Body& query, std::uint32_t mask = 0xFFFFFFFFu) const;
+
     std::size_t bodyCount() const { return w_.bodies.size(); }
     World& world() { return w_; }   // escape hatch for advanced use
 

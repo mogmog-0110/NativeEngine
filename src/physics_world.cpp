@@ -55,6 +55,20 @@ std::vector<BodyId> PhysicsWorld::overlapBox(const V3& center, const Q& rot, con
     return out;
 }
 
+std::vector<PhysicsWorld::OverlapHit> PhysicsWorld::overlapContacts(const Body& query,
+                                                                    std::uint32_t mask) const {
+    std::vector<OverlapHit> out;
+    for (size_t i = 0; i < w_.bodies.size(); ++i) {
+        const Body& b = w_.bodies[i];
+        if (b.sensor) continue;                       // triggers don't block
+        if (!layerAllowed(mask, b)) continue;
+        Contact c = detectContact(query, b, w_.box);   // normal b -> query (push-out)
+        if (!c.hit) continue;
+        out.push_back({handle_[i], b.userData, c.normal, c.overlap});
+    }
+    return out;
+}
+
 RayHit PhysicsWorld::sphereCast(const V3& origin, double radius, const V3& dir,
                                 double maxDist, std::uint32_t mask) const {
     // Sweeping a sphere of radius R == raycasting against each body inflated by R
