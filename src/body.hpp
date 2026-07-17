@@ -2,6 +2,8 @@
 #ifndef NATIVEENGINE_BODY_HPP
 #define NATIVEENGINE_BODY_HPP
 
+#include <cstdint>
+
 #include "vmath.hpp"
 
 namespace ne {
@@ -35,6 +37,29 @@ struct Body {
 
     int id = -1;               // stable id (sphere ids and cylinder ids are
                                // separate namespaces, matching the science layer)
+
+    // Per-body material. -1 means "inherit the World's global friction /
+    // restitution", so bodies that never set a material behave exactly as before.
+    // At a contact the two bodies' effective values are combined (World combine
+    // modes); combine(x,x)=x, so an all-inherit scene is unchanged.
+    double friction = -1.0;
+    double restitution = -1.0;
+
+    // Per-body velocity damping (drag). 0 = none. Applied each step:
+    // v *= 1/(1 + linearDamping*dt), w *= 1/(1 + angularDamping*dt).
+    double linearDamping = 0.0;
+    double angularDamping = 0.0;
+
+    // Collision filtering. `layer` is an index (0..31); `mask` is the set of
+    // layers this body collides with. Two bodies collide iff each one's mask
+    // contains the other's layer. Defaults (layer 0, mask = all) collide with
+    // everything, so unfiltered scenes are unchanged.
+    std::uint32_t layer = 0;
+    std::uint32_t mask = 0xFFFFFFFFu;
+
+    // Opaque handle for the embedder to map a body back to its gameplay entity;
+    // surfaced in contact/query results. The engine never interprets it.
+    std::uint64_t userData = 0;
 
     // Sleeping: a settled dynamic body stops integrating (and acts as immovable
     // in the solver) until disturbed. Implemented by zeroing invMass/invInertia

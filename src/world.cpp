@@ -24,12 +24,24 @@ struct Constraint {
     V3 rA, rB;         // lever arms (minimum-imaged)
     double overlap;
     double restBias;   // target separating speed from restitution
+    double mu;         // combined Coulomb friction for this contact
     double nImp = 0.0, tImp = 0.0;
 };
 
 // Below this approach speed, restitution is suppressed so resting contacts do
 // not jitter or gain energy.
 constexpr double kRestitutionSlop = 0.5;
+
+double combineMat(World::Combine m, double a, double b) {
+    switch (m) {
+        case World::Combine::Average: return 0.5 * (a + b);
+        case World::Combine::Min: return a < b ? a : b;
+        case World::Combine::Max: return a > b ? a : b;
+        case World::Combine::Multiply: return a * b;
+        case World::Combine::GeometricMean: return std::sqrt((a > 0 ? a : 0) * (b > 0 ? b : 0));
+    }
+    return 0.5 * (a + b);
+}
 }  // namespace
 
 void World::step() {
@@ -144,6 +156,12 @@ void World::integrate() {
         L += b.torque * dt;
         b.q = integrateOrientation(b.q, b.w, dt);
         b.w = b.applyInvInertiaWorld(L); // w consistent with L at the new pose
+
+        // Per-body velocity damping (drag), applied implicitly so it is stable
+        // for any dt. 0 leaves v/w untouched, so undamped bodies are unchanged.
+        if (b.linearDamping > 0.0) b.v = b.v * (1.0 / (1.0 + b.linearDamping * dt));
+        if (b.angularDamping > 0.0) b.w = b.w * (1.0 / (1.0 + b.angularDamping * dt));
+
         b.force = {};
         b.torque = {};
     }
@@ -232,8 +250,12 @@ void World::collide() {
             Body& b = bodies[pr.second];
             const size_t i = pr.first, j = pr.second;
             if (a.invMass + b.invMass <= 0.0) continue;
+            if (!layersCollide(a, b)) continue;         // collision filtering
             Contact c = detectContact(a, b, box);
             if (!c.hit) continue;
+
+            const double e = combineMat(restitutionCombine, effRestitution(a), effRestitution(b));
+            const double mu = combineMat(frictionCombine, effFriction(a), effFriction(b));
 
             // Wake a sleeping body if a genuinely moving awake body contacts it;
             // if both are asleep the pair is stable and needs no constraint.
@@ -256,12 +278,12 @@ void World::collide() {
 
             for (int p = 0; p < npts; ++p) {
                 Constraint k;
-                k.i = i; k.j = j; k.n = c.normal; k.overlap = deps[p];
+                k.i = i; k.j = j; k.n = c.normal; k.overlap = deps[p]; k.mu = mu;
                 k.rA = box.minImage(pts[p] - a.x);
                 k.rB = box.minImage(pts[p] - b.x);
                 V3 vc = (a.v + a.w.cross(k.rA)) - (b.v + b.w.cross(k.rB));
                 double vn = vc.dot(k.n);
-                k.restBias = (vn < -kRestitutionSlop) ? -restitution * vn : 0.0;
+                k.restBias = (vn < -kRestitutionSlop) ? -e * vn : 0.0;
                 cons.push_back(k);
                 if (captureContacts) debugContacts.push_back({pts[p], c.normal, deps[p], i, j});
             }
@@ -289,7 +311,7 @@ void World::collide() {
                 b.v -= J * b.invMass; b.w -= b.applyInvInertiaWorld(k.rB.cross(J));
             }
             // Friction: oppose tangential velocity, clamped to the Coulomb cone.
-            if (friction > 0.0 && k.nImp > 0.0) {
+            if (k.mu > 0.0 && k.nImp > 0.0) {
                 V3 vc2 = (a.v + a.w.cross(k.rA)) - (b.v + b.w.cross(k.rB));
                 V3 vt = vc2 - k.n * vc2.dot(k.n);
                 double vtl = vt.norm();
@@ -298,7 +320,7 @@ void World::collide() {
                     double Kt = effMass(a, b, k.rA, k.rB, t);
                     if (Kt > 1e-18) {
                         double djt = -vtl / Kt;
-                        double maxF = friction * k.nImp;
+                        double maxF = k.mu * k.nImp;
                         double old = k.tImp;
                         double sum = old + djt;
                         k.tImp = (sum < -maxF) ? -maxF : (sum > maxF ? maxF : sum);

@@ -23,6 +23,7 @@ inline constexpr BodyId kInvalidBody = 0;
 
 struct ContactInfo {
     BodyId a = kInvalidBody, b = kInvalidBody;
+    std::uint64_t aUser = 0, bUser = 0;   // the bodies' userData (entity ids)
     V3 point;
     V3 normal;      // from b toward a
     double depth = 0.0;
@@ -129,6 +130,25 @@ public:
             b->w += b->applyInvInertiaWorld((point - b->x).cross(imp));
         }
     }
+
+    // --- per-body properties (game backend surface) ---
+    // Material: friction / restitution for this body; combined with the partner's
+    // at each contact (World combine modes). A negative value inherits the world
+    // default.
+    void setMaterial(BodyId h, double friction, double restitution) {
+        if (Body* b = body(h)) { b->friction = friction; b->restitution = restitution; }
+    }
+    void setDamping(BodyId h, double linear, double angular) {
+        if (Body* b = body(h)) { b->linearDamping = linear; b->angularDamping = angular; }
+    }
+    // Collision filter: `layer` is an index 0..31; `mask` is the set of layers
+    // this body collides with. Two bodies collide iff each mask holds the other's
+    // layer.
+    void setLayerMask(BodyId h, std::uint32_t layer, std::uint32_t mask) {
+        if (Body* b = body(h)) { b->layer = layer; b->mask = mask; }
+    }
+    void setUserData(BodyId h, std::uint64_t data) { if (Body* b = body(h)) b->userData = data; }
+    std::uint64_t userData(BodyId h) const { const Body* b = body(h); return b ? b->userData : 0; }
 
     void setContactCallback(std::function<void(const ContactInfo&)> cb) {
         onContact_ = std::move(cb);

@@ -822,6 +822,73 @@ void test_joints() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Game-backend body properties (Tier 1): per-body material + combine modes,
+// damping, collision layers/masks, and userData routed through contact events.
+// ---------------------------------------------------------------------------
+void test_per_body_material() {
+    // Head-on of two equal spheres; return their separating speed after impact.
+    auto headon = [](double ea, double eb, World::Combine mode) {
+        World w;
+        w.dt = 1.0 / 240.0; w.restitution = 0.5; w.box.half = 100.0;
+        w.restitutionCombine = mode;
+        Body a = makeSphere(0, V3{-1.0, 0, 0}, 0.5, 1.0); a.v = V3{1, 0, 0}; a.restitution = ea;
+        Body b = makeSphere(1, V3{1.0, 0, 0}, 0.5, 1.0);  b.v = V3{-1, 0, 0}; b.restitution = eb;
+        w.bodies = {a, b};
+        for (int s = 0; s < 400; ++s) w.step();
+        return w.bodies[1].v.x - w.bodies[0].v.x;   // >0 means receding
+    };
+    check(close(headon(1.0, 1.0, World::Combine::Max), 2.0, 1e-3),
+          "material: both e=1 -> elastic, separates at the approach speed");
+    check(close(headon(0.0, 1.0, World::Combine::Max), 2.0, 1e-3),
+          "material: restitution combine Max picks the bouncier body");
+    check(std::fabs(headon(0.0, 1.0, World::Combine::Min)) < 0.1,
+          "material: restitution combine Min -> inelastic (no separation)");
+}
+
+void test_damping() {
+    World w;
+    w.dt = 1.0 / 120.0; w.box.half = 1000.0;
+    Body a = makeSphere(0, V3{0, 0, 0}, 1.0, 1.0);  a.v = V3{10, 0, 0}; a.linearDamping = 1.0;
+    Body b = makeSphere(1, V3{0, 50, 0}, 1.0, 1.0); b.v = V3{10, 0, 0};   // undamped, far away
+    w.bodies = {a, b};
+    for (int s = 0; s < 120; ++s) w.step();          // 1 second
+    check(w.bodies[0].v.x < 0.5 * w.bodies[1].v.x, "damping: damped body loses speed");
+    check(close(w.bodies[1].v.x, 10.0, 1e-9), "damping: zero damping leaves velocity unchanged");
+}
+
+void test_collision_layers() {
+    // two spheres approaching head-on; filtered onto non-matching layers they
+    // must pass through, otherwise (default masks) they must collide.
+    auto finalVx = [](bool filter) {
+        World w;
+        w.dt = 1.0 / 240.0; w.restitution = 1.0; w.box.half = 100.0;
+        Body a = makeSphere(0, V3{-2, 0, 0}, 0.5, 1.0); a.v = V3{2, 0, 0};
+        Body b = makeSphere(1, V3{2, 0, 0}, 0.5, 1.0);  b.v = V3{-2, 0, 0};
+        if (filter) { a.layer = 0; a.mask = 1u << 0; b.layer = 1; b.mask = 1u << 1; }
+        w.bodies = {a, b};
+        for (int s = 0; s < 300; ++s) w.step();
+        return w.bodies[0].v.x;
+    };
+    check(close(finalVx(true), 2.0, 1e-9), "layers: non-matching layers pass through");
+    check(finalVx(false) < 0.0, "layers: default masks collide (velocity reverses)");
+}
+
+void test_userdata() {
+    PhysicsWorld pw;
+    pw.setBox(100.0, false); pw.setTimestep(1.0 / 240.0); pw.setRestitution(1.0);
+    BodyId a = pw.addSphere(V3{-2, 0, 0}, 0.5, 1.0);
+    BodyId b = pw.addSphere(V3{2, 0, 0}, 0.5, 1.0);
+    pw.setVelocity(a, V3{2, 0, 0}); pw.setVelocity(b, V3{-2, 0, 0});
+    pw.setUserData(a, 111); pw.setUserData(b, 222);
+    bool fired = false; std::uint64_t ua = 0, ub = 0;
+    pw.setContactCallback([&](const ContactInfo& ci) { fired = true; ua = ci.aUser; ub = ci.bUser; });
+    for (int s = 0; s < 300; ++s) pw.step();
+    check(fired, "userData: contact event fired");
+    check((ua == 111 && ub == 222) || (ua == 222 && ub == 111),
+          "userData: contact reports each body's userData");
+}
+
 }  // namespace
 
 int runSelftest() {
@@ -850,6 +917,10 @@ int runSelftest() {
     test_sleeping();
     test_broadphase();
     test_joints();
+    test_per_body_material();
+    test_damping();
+    test_collision_layers();
+    test_userdata();
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

@@ -44,10 +44,26 @@ class World {
 public:
     Box box;
     double dt = 1.0 / 120.0;
-    double restitution = 1.0;   // e in [0,1]; 1 = perfectly elastic
-    double friction = 0.0;      // Coulomb mu; 0 = frictionless
+    double restitution = 1.0;   // e in [0,1]; 1 = perfectly elastic (default material)
+    double friction = 0.0;      // Coulomb mu; 0 = frictionless (default material)
     double contactBeta = 0.2;   // positional-correction fraction per step
     V3 gravity;                 // uniform acceleration (0 for the science runs)
+
+    // How a pair's two per-body materials combine at a contact. Defaults chosen
+    // so that combine(x,x)=x -- an all-default scene reduces to the old global
+    // behaviour exactly (Multiply is intentionally NOT the default).
+    enum class Combine { Average, Min, Max, Multiply, GeometricMean };
+    Combine restitutionCombine = Combine::Max;
+    Combine frictionCombine = Combine::GeometricMean;
+
+    // A body's effective material: its own value, or the world default if unset
+    // (sentinel < 0). Pair values are then run through the combine modes above.
+    double effFriction(const Body& b) const { return b.friction < 0 ? friction : b.friction; }
+    double effRestitution(const Body& b) const { return b.restitution < 0 ? restitution : b.restitution; }
+    // Layer/mask filter: collide iff each body's mask contains the other's layer.
+    static bool layersCollide(const Body& a, const Body& b) {
+        return (a.mask & (1u << (b.layer & 31u))) && (b.mask & (1u << (a.layer & 31u)));
+    }
 
     // Sleeping thresholds. A dynamic body below sleepLinVel/sleepAngVel for
     // sleepTime seconds sleeps; a contact with an awake partner faster than
