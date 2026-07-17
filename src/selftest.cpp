@@ -1003,6 +1003,34 @@ void test_capsule() {
     }
 }
 
+void test_queries() {
+    PhysicsWorld pw;
+    pw.setBox(1000.0, false); pw.setTimestep(1.0 / 240.0);
+    BodyId s1 = pw.addSphere(V3{10, 0, 0}, 1.0, 1.0); pw.makeStatic(s1);
+    BodyId bx = pw.addBox(V3{0, -5, 0}, Q{1, 0, 0, 0}, V3{2, 1, 2}, 1.0); pw.makeStatic(bx);
+    (void)bx;
+
+    RayHit h = pw.raycast(V3{0, 0, 0}, V3{1, 0, 0}, 100.0);
+    check(h.hit && h.body == s1, "raycast: hits the sphere ahead");
+    check(close(h.distance, 9.0, 1e-6), "raycast: distance to the sphere surface");
+    check(close(h.normal.x, -1.0, 1e-6), "raycast: outward normal points back along the ray");
+
+    check(!pw.raycast(V3{0, 0, 0}, V3{-1, 0, 0}, 100.0).hit, "raycast: misses when pointing away");
+
+    pw.setLayerMask(s1, 3, 0xFFFFFFFFu);
+    check(!pw.raycast(V3{0, 0, 0}, V3{1, 0, 0}, 100.0, ~(1u << 3)).hit,
+          "raycast: layer mask excludes the sphere");
+    pw.setLayerMask(s1, 0, 0xFFFFFFFFu);
+
+    auto ov = pw.overlapSphere(V3{10.5, 0, 0}, 1.5);
+    check(ov.size() == 1 && ov[0] == s1, "overlapSphere: finds the nearby sphere");
+    check(pw.overlapSphere(V3{100, 100, 100}, 1.0).empty(), "overlapSphere: empty far away");
+
+    RayHit sc = pw.sphereCast(V3{0, 0, 0}, 1.0, V3{1, 0, 0}, 100.0);
+    check(sc.hit && sc.body == s1, "sphereCast: sweep hits the sphere");
+    check(close(sc.distance, 8.0, 1e-6), "sphereCast: TOI accounts for the swept radius");
+}
+
 }  // namespace
 
 int runSelftest() {
@@ -1039,6 +1067,7 @@ int runSelftest() {
     test_contact_events();
     test_triggers();
     test_capsule();
+    test_queries();
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

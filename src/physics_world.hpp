@@ -31,6 +31,16 @@ struct ContactInfo {
     double depth = 0.0;
 };
 
+// Result of a scene raycast: the nearest body the ray hits, if any.
+struct RayHit {
+    bool hit = false;
+    BodyId body = kInvalidBody;
+    std::uint64_t userData = 0;
+    V3 point;
+    V3 normal;         // outward surface normal at the hit
+    double distance = 0.0;
+};
+
 class PhysicsWorld {
 public:
     // --- configuration (forwarded to the solver) ---
@@ -190,6 +200,22 @@ public:
     void setTriggerEnterCallback(ContactCb cb) { onTrigEnter_ = std::move(cb); }
     void setTriggerStayCallback(ContactCb cb) { onTrigStay_ = std::move(cb); }
     void setTriggerExitCallback(ContactCb cb) { onTrigExit_ = std::move(cb); }
+
+    // --- scene queries (layer-filtered, PBC-aware) ---
+    // Nearest body hit by the ray from origin along dir (need not be unit) up to
+    // maxDist. `mask` is the set of layers to test (bit set => layer included).
+    RayHit raycast(const V3& origin, const V3& dir, double maxDist,
+                   std::uint32_t mask = 0xFFFFFFFFu) const;
+    // All bodies overlapping a query sphere / box (e.g. area-of-effect, placement).
+    std::vector<BodyId> overlapSphere(const V3& center, double radius,
+                                      std::uint32_t mask = 0xFFFFFFFFu) const;
+    std::vector<BodyId> overlapBox(const V3& center, const Q& rot, const V3& half,
+                                   std::uint32_t mask = 0xFFFFFFFFu) const;
+    // Sweep a sphere of `radius` from `origin` along `dir` for maxDist; returns the
+    // first body hit (time-of-impact via conservative advancement). The building
+    // block for the character controller and CCD.
+    RayHit sphereCast(const V3& origin, double radius, const V3& dir, double maxDist,
+                      std::uint32_t mask = 0xFFFFFFFFu) const;
 
     std::size_t bodyCount() const { return w_.bodies.size(); }
     World& world() { return w_; }   // escape hatch for advanced use
