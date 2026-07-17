@@ -22,6 +22,13 @@ Standalone check (does not touch MitiruEngine):
 In a real MitiruEngine build the `compat/` shim is NOT on the include path -- the
 real `external/sgc` headers are used instead.
 
+**Verified against the real sgc headers (2026-07-18):** the binding compiles and
+runs 12/12 against MitiruEngine's actual `external/sgc/include` (`Vec3<float>` /
+`Quaternion<float>`, both `(x,y,z[,w])` with matching constructors) under
+`/std:c++20`. The real sgc math uses C++20 concepts, so the translation units that
+include `native_physics_world.hpp` must be C++20 (MitiruEngine already is); the
+`NativeEngine` static lib itself stays C++17.
+
 ## Feature surface (all sgc-typed)
 
 The backend exposes NativeEngine's full feature set through `sgc` types:
