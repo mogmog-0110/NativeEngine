@@ -17,10 +17,50 @@ MitiruEngine backend has: **native periodic boundaries**.
 Standalone check (does not touch MitiruEngine):
 
     NativeEngine\mitiru\build_binding_test.bat
-    NativeEngine\build\test_binding.exe        # 5/5 PASS
+    NativeEngine\build\test_binding.exe        # 12/12 PASS
 
 In a real MitiruEngine build the `compat/` shim is NOT on the include path -- the
 real `external/sgc` headers are used instead.
+
+## Feature surface (all sgc-typed)
+
+The backend exposes NativeEngine's full feature set through `sgc` types:
+
+- **Shapes:** sphere, box, cylinder, **capsule**, plane, **static triangle mesh**,
+  **heightfield** (`createSphere/Box/Cylinder/Capsule/Plane/StaticMesh/Heightfield`).
+- **Body types:** dynamic / static / **kinematic** (`makeStatic/makeKinematic`,
+  `setKinematicTarget` for moving platforms).
+- **Per-body properties:** `setMaterial` (friction/restitution), `setDamping`,
+  `setGravityScale`, `setLayerMask`, `setUserData`, `setSensor`, `setCcd`.
+- **Events (sgc callback with `ContactEventS`):** `onContactBegin/Stay/End`,
+  `onTriggerEnter/Stay/Exit`.
+- **Queries:** `raycast`, `sphereCast`, `overlapSphere` (PBC-aware, layer-filtered).
+- **Joints:** `addBall/Hinge/Fixed/SliderJoint` + `setJointMotor/Limit/Breakable`.
+- **Character:** `NativeCharacter` (a capsule collide-and-slide controller).
+- **Integration:** `interpolatedPosition/Rotation(alpha)` for smooth rendering,
+  `debugDraw(lineFn, flags)` into MitiruEngine's own renderer, `saveState/loadState`.
+
+### The component adapter -- turning a `PhysicsTrait` into a body in one call
+
+`BodyDesc` mirrors `PhysicsTrait` / `RigidBodyComponent`; fill it from the
+component and call `createBody`. `mass > 0` overrides density to hit that mass;
+`friction`/`restitution < 0` inherit the world default. This makes the schema
+fields (bodyType, collider, mass, material, damping, isTrigger, collisionLayer/mask)
+actually take effect at runtime -- which the un-wired Jolt path never did.
+
+```cpp
+BodyDesc d;
+d.type = trait.bodyType == "kinematic" ? BodyDesc::Type::Kinematic
+       : trait.bodyType == "static"    ? BodyDesc::Type::Static
+                                       : BodyDesc::Type::Dynamic;
+d.shape = /* map trait.colliderType */ BodyDesc::Shape::Capsule;
+d.position = transform.position; d.rotation = transform.rotationQuat();
+d.radius = trait.colliderSize[0]; d.halfHeight = trait.colliderSize[1];
+d.mass = trait.mass; d.friction = trait.friction; d.restitution = trait.restitution;
+d.isTrigger = trait.isTrigger; d.layer = trait.collisionLayer; d.mask = trait.collisionMask;
+d.userData = entityId;
+BodyId body = phys.createBody(d);
+```
 
 ## Conventions matched (from the MitiruEngine survey)
 
@@ -79,6 +119,16 @@ sgc::Vec3f p = phys.getPosition(ball);   // feed to Pipeline3D::submitMesh
 // The distinctive capability -- a periodic world:
 phys.setPeriodicBox(25.f, true);         // seamless wrap-around with correct
                                          // cross-boundary collisions
+
+// A player: a capsule character controller (collide-and-slide).
+NativeCharacter player(phys, 0.4f, 0.8f);
+player.setPosition({0, 2, 0});
+// each frame: move by input*speed*dt + gravity; player.grounded() for jump logic
+player.move(inputDir * (speed * dt));
+
+// Gameplay queries + smooth rendering:
+RayHitS hit = phys.raycast(muzzle, aimDir, 100.f);       // weapons / line of sight
+sgc::Vec3f smooth = phys.interpolatedPosition(ball, alpha); // judder-free at fixed step
 ```
 
 ## Caveats
@@ -89,7 +139,12 @@ phys.setPeriodicBox(25.f, true);         // seamless wrap-around with correct
   genuinely wants a toroidal world.
 - **Determinism** is bit-for-bit for a given build. If the game needs
   cross-platform determinism, pin the compiler/flags.
-- **Contact manifolds** cover box-box; sphere/cylinder use single-point contact
-  (fine for dynamics, and boxes stack).
+- **Contact manifolds** cover box-box; sphere/capsule/cylinder/mesh use
+  single-point contact, kept stable across frames by warm starting (fine for
+  dynamics and stacks, less rigid than a full manifold for large flat rests).
+- **Queries skip mesh/convex/plane** for now (`raycast` against those returns no
+  hit); ray-vs-triangle-mesh is future work.
+- **Compound & convex inertia** are approximations (parallel-axis diagonal / vertex
+  AABB) -- fine for gameplay, off for very asymmetric bodies.
 - The `native_physics_system.hpp` component field names are illustrative --
-  adjust to the game's actual `NativeRigidBodyComponent`.
+  adjust to the game's actual component; prefer the `BodyDesc` adapter above.

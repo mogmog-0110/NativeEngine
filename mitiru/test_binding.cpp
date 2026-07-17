@@ -59,6 +59,56 @@ int main() {
     sgc::Vec3f pa = pw.getPosition(a);
     check(std::fabs(pa.x) <= 5.0f + 1e-4f, "binding: native periodic box wraps a body (sgc API)");
 
+    // ---- expanded surface ----
+    {
+        NativePhysicsWorld nw;
+        nw.setGravity(sgc::Vec3f{0, -10, 0});
+        nw.setTimestep(1.0f / 240.0f);
+
+        // BodyDesc adapter (PhysicsTrait/RigidBodyComponent -> body), with mass override.
+        BodyDesc fd; fd.type = BodyDesc::Type::Static; fd.shape = BodyDesc::Shape::Box;
+        fd.position = sgc::Vec3f{0, -1, 0}; fd.halfExtents = sgc::Vec3f{20, 1, 20};
+        BodyId floor2 = nw.createBody(fd); (void)floor2;
+        BodyDesc bd; bd.shape = BodyDesc::Shape::Capsule; bd.position = sgc::Vec3f{0, 5, 0};
+        bd.radius = 0.4f; bd.halfHeight = 0.5f; bd.mass = 3.0f; bd.friction = 0.5f;
+        bd.layer = 2; bd.userData = 4242;
+        BodyId cap = nw.createBody(bd);
+        check(cap != kInvalidBody && nw.getUserData(cap) == 4242, "binding: createBody adapter (capsule, userData)");
+
+        // raycast down onto the capsule
+        RayHitS h = nw.raycast(sgc::Vec3f{0, 20, 0}, sgc::Vec3f{0, -1, 0}, 100.0f);
+        check(h.hit && h.body == cap, "binding: raycast finds the body");
+
+        for (int s = 0; s < 1500; ++s) nw.update(1.0f / 240.0f);
+        check(nw.getPosition(cap).y < 2.0f, "binding: capsule created via adapter falls and rests");
+
+        // snapshot round-trip
+        std::vector<char> snap = nw.saveState();
+        check(!snap.empty() && nw.loadState(snap), "binding: snapshot save/load round-trips");
+    }
+    {   // trigger event through the sgc-typed callback
+        NativePhysicsWorld tw; tw.setTimestep(1.0f / 240.0f);
+        BodyId trig = tw.createBox(sgc::Vec3f{0, 0, 0}, sgc::Quaternionf{0, 0, 0, 1}, sgc::Vec3f{1, 1, 1}, 1.0f);
+        tw.makeStatic(trig); tw.setSensor(trig, true);
+        BodyId ball2 = tw.createSphere(sgc::Vec3f{-5, 0, 0}, 0.5f, 1.0f);
+        tw.setVelocity(ball2, sgc::Vec3f{5, 0, 0});
+        int enter = 0;
+        tw.onTriggerEnter([&](const ContactEventS&) { ++enter; });
+        for (int s = 0; s < 400; ++s) tw.update(1.0f / 240.0f);
+        check(enter == 1, "binding: trigger enter event fires (sgc callback)");
+    }
+    {   // capsule character controller on a floor
+        NativePhysicsWorld cw; cw.setTimestep(1.0f / 240.0f);
+        BodyId fl = cw.createBox(sgc::Vec3f{0, -1, 0}, sgc::Quaternionf{0, 0, 0, 1}, sgc::Vec3f{20, 1, 20}, 1.0f);
+        cw.makeStatic(fl);
+        NativeCharacter ch(cw, 0.5f, 0.5f);
+        ch.setPosition(sgc::Vec3f{0, 1.02f, 0});
+        ch.move(sgc::Vec3f{0, 0, 0});
+        check(ch.grounded(), "binding: character controller reports grounded");
+        for (int i = 0; i < 60; ++i) ch.move(sgc::Vec3f{0.1f, 0, 0});
+        check(ch.position().x > 3.0f, "binding: character controller walks");
+    }
+
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
