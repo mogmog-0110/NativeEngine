@@ -2,7 +2,9 @@
 #ifndef NATIVEENGINE_BODY_HPP
 #define NATIVEENGINE_BODY_HPP
 
+#include <algorithm>
 #include <cstdint>
+#include <vector>
 
 #include "vmath.hpp"
 
@@ -12,7 +14,10 @@ namespace ne {
 // the parameters the narrow phase needs. Inertia is stored as the DIAGONAL of
 // the inverse body-frame inertia tensor, valid because both shapes are integrated
 // about their principal axes.
-enum class Shape { Sphere, Cylinder, Box, Capsule };
+//   Convex : an arbitrary convex hull given by `vertices` (body frame).
+//   Plane  : an infinite static half-space; `halfExtents` holds the world normal
+//            and the plane passes through `x`.
+enum class Shape { Sphere, Cylinder, Box, Capsule, Convex, Plane };
 
 struct Body {
     // State
@@ -31,9 +36,10 @@ struct Body {
 
     // Shape
     Shape shape = Shape::Sphere;
-    double radius = 1.0;       // sphere radius, or cylinder radius
-    double halfHeight = 0.0;   // cylinder half-height (0 for sphere)
-    V3 halfExtents;            // box half-extents (Box only)
+    double radius = 1.0;       // sphere radius, or cylinder/capsule radius
+    double halfHeight = 0.0;   // cylinder/capsule half-height (0 for sphere)
+    V3 halfExtents;            // box half-extents (Box); world normal (Plane)
+    std::vector<V3> vertices;  // convex-hull vertices, body frame (Convex only)
 
     int id = -1;               // stable id (sphere ids and cylinder ids are
                                // separate namespaces, matching the science layer)
@@ -90,6 +96,12 @@ struct Body {
         if (shape == Shape::Sphere) return radius;
         if (shape == Shape::Box) return halfExtents.norm();
         if (shape == Shape::Capsule) return halfHeight + radius;   // segment + cap
+        if (shape == Shape::Plane) return 1e30;                    // infinite (grid-excluded)
+        if (shape == Shape::Convex) {
+            double m = 0.0;
+            for (const V3& vert : vertices) m = std::max(m, vert.norm());
+            return m;
+        }
         return std::sqrt(halfHeight * halfHeight + radius * radius);  // cylinder
     }
 
@@ -220,6 +232,47 @@ inline Body makeCapsule(int id, const V3& x, const Q& q, double radius,
     b.invInertiaBody = {Ixx > 0 ? 1.0 / Ixx : 0.0,
                         Iyy > 0 ? 1.0 / Iyy : 0.0,
                         Ixx > 0 ? 1.0 / Ixx : 0.0};
+    return b;
+}
+
+// Factory: an arbitrary convex hull from body-frame vertices. Mass and inertia
+// are approximated by the vertices' axis-aligned bounding box (adequate for
+// gameplay); the exact convex path is the same GJK/EPA machinery via the support.
+inline Body makeConvex(int id, const V3& x, const Q& q, std::vector<V3> verts,
+                       double density) {
+    Body b;
+    b.shape = Shape::Convex;
+    b.id = id;
+    b.x = x;
+    b.q = q;
+    b.vertices = std::move(verts);
+    V3 lo{1e30, 1e30, 1e30}, hi{-1e30, -1e30, -1e30};
+    for (const V3& v : b.vertices) {
+        lo = V3{std::min(lo.x, v.x), std::min(lo.y, v.y), std::min(lo.z, v.z)};
+        hi = V3{std::max(hi.x, v.x), std::max(hi.y, v.y), std::max(hi.z, v.z)};
+    }
+    V3 he = (hi - lo) * 0.5;
+    const double hx = std::max(he.x, 1e-4), hy = std::max(he.y, 1e-4), hz = std::max(he.z, 1e-4);
+    double m = density * 8.0 * hx * hy * hz;
+    b.invMass = (m > 0) ? 1.0 / m : 0.0;
+    double Ix = (1.0 / 3.0) * m * (hy * hy + hz * hz);
+    double Iy = (1.0 / 3.0) * m * (hx * hx + hz * hz);
+    double Iz = (1.0 / 3.0) * m * (hx * hx + hy * hy);
+    b.invInertiaBody = {Ix > 0 ? 1.0 / Ix : 0.0, Iy > 0 ? 1.0 / Iy : 0.0, Iz > 0 ? 1.0 / Iz : 0.0};
+    return b;
+}
+
+// Factory: an infinite static plane (half-space) through `point` with outward
+// `normal`. Always static: nothing can move it.
+inline Body makePlane(int id, const V3& point, const V3& normal) {
+    Body b;
+    b.shape = Shape::Plane;
+    b.id = id;
+    b.x = point;
+    b.halfExtents = normal.normalized();   // world normal stored here
+    b.invMass = 0.0;
+    b.invInertiaBody = {0, 0, 0};
+    b.dynamic = false;
     return b;
 }
 

@@ -28,6 +28,13 @@ inline V3 supportWorld(const Body& b, const V3& d) {
         // capsule is the Minkowski sum of a segment and a sphere.
         double sy = (db.y >= 0.0) ? b.halfHeight : -b.halfHeight;
         sb = V3{0.0, sy, 0.0} + db.normalized() * b.radius;
+    } else if (b.shape == Shape::Convex) {
+        // Farthest vertex along d (in the body frame).
+        double best = -1e300; sb = V3{0, 0, 0};
+        for (const V3& v : b.vertices) {
+            double dp = v.dot(db);
+            if (dp > best) { best = dp; sb = v; }
+        }
     } else {
         // Cylinder: axis along body +Y. Farther cap plane along y, rim radially.
         double sy = (db.y >= 0.0) ? b.halfHeight : -b.halfHeight;

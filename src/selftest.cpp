@@ -1098,6 +1098,46 @@ void test_general_joints() {
     }
 }
 
+void test_plane_and_convex() {
+    // (a) Plane: a sphere dropped onto an infinite ground plane rests on it.
+    {
+        World w;
+        w.dt = 1.0 / 240.0; w.box.half = 1000.0; w.gravity = {0, -10, 0};
+        w.restitution = 0.0; w.friction = 0.5;
+        w.bodies.push_back(makePlane(0, V3{0, 0, 0}, V3{0, 1, 0}));
+        w.bodies.push_back(makeSphere(1, V3{0, 5, 0}, 0.5, 1.0));
+        for (int s = 0; s < 1200; ++s) w.step();
+        check(close(w.bodies[1].x.y, 0.5, 0.03), "plane: sphere rests on the plane at its radius");
+        check(w.bodies[1].v.norm() < 0.1, "plane: sphere comes to rest");
+    }
+    // (b) Convex hull (octahedron) dropped onto a plane settles above it.
+    {
+        World w;
+        w.dt = 1.0 / 240.0; w.box.half = 1000.0; w.gravity = {0, -10, 0};
+        w.restitution = 0.0; w.friction = 0.6;
+        w.bodies.push_back(makePlane(0, V3{0, 0, 0}, V3{0, 1, 0}));
+        std::vector<V3> oct = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+        w.bodies.push_back(makeConvex(1, V3{0, 4, 0}, Q{1, 0, 0, 0}, oct, 1.0));
+        for (int s = 0; s < 1500; ++s) w.step();
+        double y = w.bodies[1].x.y;
+        check(y > 0.3 && y < 1.2, "convex: octahedron settles resting on the plane");
+        check(w.bodies[1].v.norm() < 0.2, "convex: comes to rest");
+    }
+    // (c) Convex vs box via GJK/EPA: an overlapping convex is pushed out.
+    {
+        World w;
+        w.dt = 1.0 / 240.0; w.box.half = 1000.0; w.restitution = 0.0;
+        Body bx = makeBox(0, V3{0, 0, 0}, Q{1, 0, 0, 0}, V3{1, 1, 1}, 1.0);
+        bx.invMass = 0; bx.invInertiaBody = {0, 0, 0}; bx.dynamic = false;
+        std::vector<V3> tet = {{0.8, 0.8, 0.8}, {-0.8, -0.8, 0.8}, {-0.8, 0.8, -0.8}, {0.8, -0.8, -0.8}};
+        w.bodies.push_back(bx);
+        w.bodies.push_back(makeConvex(1, V3{0, 1.2, 0}, Q{1, 0, 0, 0}, tet, 1.0));
+        double y0 = w.bodies[1].x.y;
+        for (int s = 0; s < 400; ++s) w.step();
+        check(w.bodies[1].x.y > y0 + 0.05, "convex vs box: EPA separates the overlap");
+    }
+}
+
 }  // namespace
 
 int runSelftest() {
@@ -1136,6 +1176,7 @@ int runSelftest() {
     test_capsule();
     test_queries();
     test_general_joints();
+    test_plane_and_convex();
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

@@ -65,6 +65,13 @@ public:
     BodyId addCapsule(const V3& pos, const Q& rot, double radius, double halfHeight, double density) {
         return add(makeCapsule(0, pos, rot, radius, halfHeight, density));
     }
+    BodyId addConvex(const V3& pos, const Q& rot, const std::vector<V3>& verts, double density) {
+        return add(makeConvex(0, pos, rot, verts, density));
+    }
+    // An infinite static plane (half-space) through `point` with outward `normal`.
+    BodyId addPlane(const V3& point, const V3& normal) {
+        return add(makePlane(0, point, normal));
+    }
     // A static (infinite-mass) body: never integrates, never sleeps/wakes,
     // collides as immovable.
     BodyId makeStatic(BodyId h) {

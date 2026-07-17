@@ -308,7 +308,11 @@ std::vector<std::pair<std::size_t, std::size_t>> World::broadphasePairs() const 
     const size_t n = bodies.size();
     std::vector<std::pair<std::size_t, std::size_t>> pairs;
     double maxR = 0.0;
-    for (const Body& b : bodies) maxR = std::max(maxR, b.boundingRadius());
+    bool anyPlane = false;
+    for (const Body& b : bodies) {
+        if (b.shape == Shape::Plane) { anyPlane = true; continue; }   // infinite: not gridded
+        maxR = std::max(maxR, b.boundingRadius());
+    }
     const double cell = 2.0 * maxR;
 
     if (forceBruteForce || n < 64 || cell < 1e-9) {
@@ -316,6 +320,16 @@ std::vector<std::pair<std::size_t, std::size_t>> World::broadphasePairs() const 
             for (size_t j = i + 1; j < n; ++j) pairs.push_back({i, j});
         return pairs;
     }
+
+    // Planes are grid-excluded (infinite extent); pair each with every other body.
+    auto appendPlanePairs = [&]() {
+        if (!anyPlane) return;
+        for (size_t p = 0; p < n; ++p) {
+            if (bodies[p].shape != Shape::Plane) continue;
+            for (size_t j = 0; j < n; ++j)
+                if (j != p) pairs.push_back({std::min(p, j), std::max(p, j)});
+        }
+    };
 
     // Per-axis cell counts for the periodic wrap (>=1). Reflective uses unbounded
     // integer cells (no wrap).
@@ -341,10 +355,12 @@ std::vector<std::pair<std::size_t, std::size_t>> World::broadphasePairs() const 
     std::unordered_map<std::uint64_t, std::vector<size_t>> grid;
     grid.reserve(n * 2);
     for (size_t i = 0; i < n; ++i) {
+        if (bodies[i].shape == Shape::Plane) continue;
         long cx = cellOf(bodies[i].x, 0), cy = cellOf(bodies[i].x, 1), cz = cellOf(bodies[i].x, 2);
         grid[key(cx, cy, cz)].push_back(i);
     }
     for (size_t i = 0; i < n; ++i) {
+        if (bodies[i].shape == Shape::Plane) continue;
         long cx = cellOf(bodies[i].x, 0), cy = cellOf(bodies[i].x, 1), cz = cellOf(bodies[i].x, 2);
         for (int dx = -1; dx <= 1; ++dx)
             for (int dy = -1; dy <= 1; ++dy)
@@ -361,6 +377,7 @@ std::vector<std::pair<std::size_t, std::size_t>> World::broadphasePairs() const 
                         if (j != i) pairs.push_back({std::min(i, j), std::max(i, j)});
                 }
     }
+    appendPlanePairs();
     std::sort(pairs.begin(), pairs.end());
     pairs.erase(std::unique(pairs.begin(), pairs.end()), pairs.end());
     return pairs;

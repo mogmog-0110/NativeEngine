@@ -13,8 +13,34 @@ namespace ne {
 // toward a (the resolver / manifold convention), `point` is on a's side, and
 // `overlap` is the penetration depth. Fast exact analytic paths for
 // sphere-sphere and sphere-cylinder; GJK+EPA for everything else.
+// Infinite half-space (plane) vs any convex body. `plane.halfExtents` is the
+// world outward normal; the plane passes through plane.x. Returns normal pointing
+// from the plane toward `other` (plane -> other), point at the deepest vertex.
+inline Contact planeVsConvex(const Body& other, const Body& plane, const Box& box) {
+    Contact c;
+    V3 n = plane.halfExtents;                          // unit world normal
+    V3 sp = supportWorld(other, -n);                   // deepest point toward the plane
+    V3 rel = box.minImage(sp - plane.x);
+    double pen = -n.dot(rel);                          // >0 means below the surface
+    if (pen <= 0.0) return c;
+    c.hit = true;
+    c.overlap = pen;
+    c.normal = n;                                      // plane -> other
+    c.point = sp + n * (0.5 * pen);                    // midway to the surface
+    return c;
+}
+
 inline Contact detectContact(const Body& a, const Body& b, const Box& box) {
     Contact c;
+    // Plane (infinite half-space) vs anything: analytic, not GJK.
+    if (a.shape == Shape::Plane || b.shape == Shape::Plane) {
+        if (a.shape == Shape::Plane && b.shape == Shape::Plane) return c;   // two planes: ignore
+        const Body& plane = (a.shape == Shape::Plane) ? a : b;
+        const Body& other = (a.shape == Shape::Plane) ? b : a;
+        Contact t = planeVsConvex(other, plane, box);   // normal plane -> other
+        if (t.hit && a.shape == Shape::Plane) t.normal = -t.normal;   // want b -> a
+        return t;
+    }
     if (a.isSphere() && b.isSphere()) {
         V3 d = box.minImage(a.x - b.x);
         double sumR = a.radius + b.radius, dist2 = d.norm2();
