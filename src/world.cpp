@@ -1,5 +1,7 @@
 #include "world.hpp"
 
+#include "contact.hpp"
+
 namespace ne {
 
 void World::step() {
@@ -47,22 +49,15 @@ void World::collideSpheres() {
 
             double dist = std::sqrt(dist2);
             V3 normal = d / dist;                       // unit normal, b -> a
-            double vrel = (a.v - b.v).dot(normal);      // closing if < 0
+            if (a.invMass + b.invMass <= 0.0) continue;
 
-            double invSum = a.invMass + b.invMass;
-            if (invSum <= 0.0) continue;
-
-            if (vrel < 0.0) {
-                double jimp = -(1.0 + restitution) * vrel / invSum;
-                a.v += normal * (jimp * a.invMass);
-                b.v -= normal * (jimp * b.invMass);
-            }
-            // Positional correction: split the overlap by inverse-mass share so
-            // the pair stops interpenetrating without injecting velocity.
-            double overlap = sumR - dist;
-            V3 corr = normal * (contactBeta * overlap / invSum);
-            a.x += corr * a.invMass;
-            b.x -= corr * b.invMass;
+            // Contact point is on the line of centres; the lever arms are along
+            // +-normal so this reduces to a central impulse (no spin), but it
+            // goes through the same general resolver the cylinders will use.
+            V3 ra = normal * (-a.radius);
+            V3 rb = normal * (b.radius);
+            resolveContact(a, b, ra, rb, normal, restitution);
+            correctPenetration(a, b, normal, sumR - dist, contactBeta);
         }
     }
 }

@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "world.hpp"
+#include "contact.hpp"
 
 namespace ne {
 namespace {
@@ -205,6 +206,47 @@ void test_periodic_conservation() {
           "periodic gas: kinetic energy conserved to 2%");
 }
 
+// ---------------------------------------------------------------------------
+// 8. Off-centre contact impulse: conserves linear momentum, angular momentum
+//    (about the origin), and energy at e=1, AND actually imparts spin. This is
+//    the foundation for flat-cap cylinder contacts.
+// ---------------------------------------------------------------------------
+void test_offcentre_impulse() {
+    // A cylinder struck by a fast sphere near one cap: the sphere hits off the
+    // cylinder's centre of mass, so the cylinder must both translate and spin.
+    Body cyl = makeCylinder(0, V3{0, 0, 0}, Q{1, 0, 0, 0}, 1.0, 4.0, 1.0);
+    Body sph = makeSphere(1, V3{2.0, 1.8, 0}, 1.0, 1.0);   // near the +Y cap, off axis
+    sph.v = V3{-1.0, 0, 0};                                 // moving into the cylinder side
+
+    auto totalP = [&] { return cyl.v * (1.0 / cyl.invMass) + sph.v * (1.0 / sph.invMass); };
+    auto totalL = [&] {
+        return cyl.x.cross(cyl.v * (1.0 / cyl.invMass)) + cyl.angularMomentum()
+             + sph.x.cross(sph.v * (1.0 / sph.invMass)) + sph.angularMomentum();
+    };
+    auto totalE = [&] { return cyl.kinetic() + sph.kinetic(); };
+
+    V3 p0 = totalP(), l0 = totalL();
+    double e0 = totalE();
+
+    // Contact on the cylinder's +x side at y=1.8. The resolver's normal points
+    // from b (sphere) to a (cylinder), i.e. -x; the impulse then pushes the
+    // cylinder away from the sphere.
+    V3 n{-1, 0, 0};
+    V3 contact{1.0, 1.8, 0.0};                 // on the cylinder surface
+    V3 ra = contact - cyl.x;                    // off-centre -> lever arm
+    V3 rb = contact - sph.x;
+    resolveContact(cyl, sph, ra, rb, n, 1.0);
+
+    check(closeV(totalP(), p0, 1e-12), "off-centre: linear momentum conserved");
+    check(closeV(totalL(), l0, 1e-12), "off-centre: angular momentum conserved (about origin)");
+    check(close(totalE(), e0, 1e-9), "off-centre: kinetic energy conserved (e=1)");
+    check(cyl.w.norm() > 1e-6, "off-centre: cylinder acquires spin");
+    // Impulse J = j*(-x) applied at r=(1,1.8,0): torque r x J = (0,0,1.8 j), so
+    // the strike spins the cylinder about +z.
+    check(std::fabs(cyl.w.z) > std::fabs(cyl.w.x) && std::fabs(cyl.w.z) > std::fabs(cyl.w.y),
+          "off-centre: spin is about the expected (z) axis");
+}
+
 }  // namespace
 
 int runSelftest() {
@@ -216,6 +258,7 @@ int runSelftest() {
     test_wall_gas();
     test_determinism();
     test_periodic_conservation();
+    test_offcentre_impulse();
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
