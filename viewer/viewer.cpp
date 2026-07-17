@@ -1,13 +1,14 @@
-// NativeEngine LIVE demo viewer. Unlike a recording player, this steps the
-// physics engine in real time each frame and renders the current state -- a real
-// interactive demo (PhysX-snippet style): switch scenes, pause, reset, drop
-// bodies, orbit. Modern OpenGL 3.3 core (instanced Blinn-Phong, MSAA), right-
-// handed / Y-up so the view matches NativeEngine.
+// NativeEngine visual debugger -- a live, interactive tool in the spirit of the
+// PhysX Visual Debugger: it STEPS the engine in real time (not a recording) and
+// wraps it in an ImGui UI -- simulation controls, a scene hierarchy, a per-body
+// inspector, live statistics, and 3D debug overlays (velocity arrows, contact
+// points + normals, AABBs, selection highlight, periodic ghost images). Modern
+// OpenGL 3.3 core (instanced Blinn-Phong, MSAA), right-handed / Y-up so the view
+// matches NativeEngine.
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <random>
-#include <string>
 #include <vector>
 
 #include "gl_core.hpp"
@@ -15,6 +16,10 @@
 
 #include "world.hpp"
 #include "body.hpp"
+
+#include "imgui.h"
+#include "backends/imgui_impl_glut.h"
+#include "backends/imgui_impl_opengl3.h"
 
 using namespace nv;
 using namespace ne;
@@ -24,16 +29,29 @@ static World gWorld;
 static int   gScene = 1;
 static int   gStepsPerFrame = 4;    // dt = 1/240 * 4 ~ 1/60 s per frame -> real time
 static bool  gPaused = false;
+static int   gSelected = -1;
+static double gSimTime = 0.0;
 static std::mt19937_64 gRng(12345);
+
+// visualization toggles (the debugger's "eyes")
+static struct Viz {
+    bool arrows = false, contacts = true, aabb = false, dimSleep = true;
+    bool ghosts = false, grid = true, showCellAlways = false;
+    float velScale = 0.25f;
+} gViz;
 
 // camera / window
 static float gAz = 0.7f, gEl = 0.45f, gDist = 40.0f;
 static Vec3  gCenter{0, 0, 0};
 static int   gLastX = 0, gLastY = 0; static bool gDrag = false;
-static int   gWinW = 1280, gWinH = 800;
+static int   gWinW = 1440, gWinH = 900;
+static bool  gShowCell = false;
 
 static GLuint gProg = 0;
 static GLint  gUVP = -1, gUCam = -1, gULight = -1, gUUnlit = -1;
+static GLuint gLineProg = 0; static GLint gLUVP = -1;
+static GLuint gLineVao = 0, gLineVbo = 0;
+static std::vector<float> gLines;   // x,y,z,r,g,b per vertex, GL_LINES
 
 struct Mesh {
     GLuint vao = 0, vbo = 0, ebo = 0, inst = 0;
@@ -63,6 +81,14 @@ static const char* kFrag =
     "  vec3 amb=mix(vec3(0.16,0.17,0.20),vec3(0.34,0.36,0.40),hemi);\n"
     "  vec3 c=vC*(amb+diff*0.9)+vec3(1.0)*spec*0.35;\n"
     "  c=c/(c+vec3(1.0)); c=pow(c,vec3(1.0/2.2)); o=vec4(c,1.0); }\n";
+static const char* kLineVert =
+    "#version 330 core\n"
+    "layout(location=0) in vec3 aPos; layout(location=1) in vec3 aCol;\n"
+    "uniform mat4 uVP; out vec3 vCol;\n"
+    "void main(){ vCol=aCol; gl_Position=uVP*vec4(aPos,1.0); }\n";
+static const char* kLineFrag =
+    "#version 330 core\n"
+    "in vec3 vCol; out vec4 o; void main(){ o=vec4(vCol,1.0); }\n";
 
 static GLuint compile(GLenum t, const char* src) {
     GLuint s = glCreateShader(t); glShaderSource(s, 1, &src, nullptr); glCompileShader(s);
@@ -121,7 +147,6 @@ static void makeCylinder(Mesh& m, int slices = 28) {
     upload(m, v, idx, GL_TRIANGLES);
 }
 static void makeBox(Mesh& m) {
-    // 6 faces, unit half-extent [-1,1], outward normals.
     const float f[6][6] = {{1,0,0, 1,0,0},{-1,0,0, -1,0,0},{0,1,0, 0,1,0},{0,-1,0, 0,-1,0},{0,0,1, 0,0,1},{0,0,-1, 0,0,-1}};
     std::vector<float> v; std::vector<unsigned> idx;
     for (int face = 0; face < 6; ++face) {
@@ -155,28 +180,39 @@ static void drawMesh(Mesh& m, int unlit) {
     glDrawElementsInstanced(m.prim, m.indexCount, GL_UNSIGNED_INT, 0, m.instCount);
     glBindVertexArray(0);
 }
-static Vec3 palette(int id, Shape s, bool sleeping, bool isStatic) {
-    if (isStatic) return {0.30f, 0.31f, 0.34f};
+static Vec3 palette(int id, Shape s, bool sleeping, bool isStat) {
+    if (isStat) return {0.30f, 0.31f, 0.34f};
     float t = (float)((id * 2654435761u) % 997) / 997.0f;
     Vec3 c;
     if (s == Shape::Sphere) c = {0.90f, 0.48f + 0.22f * t, 0.26f};
     else if (s == Shape::Box) c = {0.35f + 0.2f * t, 0.62f, 0.42f + 0.2f * t};
     else c = {0.28f + 0.15f * t, 0.55f + 0.2f * t, 0.80f};
-    if (sleeping) c = c * 0.55f;   // dim sleeping bodies
+    if (sleeping && gViz.dimSleep) c = c * 0.55f;
     return c;
 }
 
-// ------------------------------------------------------------------ scenes
-// Modelled on the classic PhysX snippets: objects on an open GROUND plane, not
-// inside a reflective box. The box is used only for the "elastic gas" (a
-// genuine container) and the periodic cell for the PBC feature demos.
-static int gNextId = 0;
-static bool gShowCell = false;     // draw the domain wireframe (boxed/periodic only)
-static const int kNumScenes = 9;
+// ------------------------------------------------------------------ debug lines
+static void line(const Vec3& a, const Vec3& b, const Vec3& c) {
+    gLines.insert(gLines.end(), {a.x, a.y, a.z, c.x, c.y, c.z, b.x, b.y, b.z, c.x, c.y, c.z});
+}
+static void cross3(const Vec3& p, float r, const Vec3& c) {
+    line({p.x - r, p.y, p.z}, {p.x + r, p.y, p.z}, c);
+    line({p.x, p.y - r, p.z}, {p.x, p.y + r, p.z}, c);
+    line({p.x, p.y, p.z - r}, {p.x, p.y, p.z + r}, c);
+}
+static void aabb(const Vec3& ctr, float h, const Vec3& c) {
+    Vec3 v[8];
+    for (int i = 0; i < 8; ++i) v[i] = {ctr.x + ((i & 1) ? h : -h), ctr.y + ((i & 2) ? h : -h), ctr.z + ((i & 4) ? h : -h)};
+    int e[12][2] = {{0,1},{1,3},{3,2},{2,0},{4,5},{5,7},{7,6},{6,4},{0,4},{1,5},{2,6},{3,7}};
+    for (auto& ed : e) line(v[ed[0]], v[ed[1]], c);
+}
+static Vec3 v3(const V3& d) { return {(float)d.x, (float)d.y, (float)d.z}; }
 
+// ------------------------------------------------------------------ scenes
+static int gNextId = 0;
+static const int kNumScenes = 9;
 static double urand(double a, double b) { std::uniform_real_distribution<double> d(a, b); return d(gRng); }
 
-// A large static ground slab (open scenes rest on this and can roll off edges).
 static void addGround(double half = 30.0) {
     Body f = makeBox(gNextId++, {0, -1.0, 0}, Q{1, 0, 0, 0}, {half, 1.0, half}, 1.0);
     f.invMass = 0; f.invInertiaBody = {0, 0, 0}; f.dynamic = false;
@@ -185,13 +221,13 @@ static void addGround(double half = 30.0) {
 static void openGravityWorld() {
     gWorld.openBoundary = true; gWorld.gravity = {0, -10, 0};
     gWorld.friction = 0.6; gWorld.restitution = 0.0; gWorld.sleepEnabled = true;
-    gWorld.box.half = 40;   // only affects the (hidden) domain + camera fit
+    gWorld.box.half = 40;
 }
 
 static void buildScene(int id) {
     gWorld = World{};
     gWorld.dt = 1.0 / 240.0;
-    gNextId = 0; gScene = id; gShowCell = false;
+    gNextId = 0; gScene = id; gShowCell = false; gSelected = -1; gSimTime = 0.0;
     gRng.seed(12345);
 
     switch (id) {
@@ -207,49 +243,45 @@ static void buildScene(int id) {
             break;
         }
         case 2: {  // brick wall knocked down by a projectile
-            openGravityWorld();
-            gWorld.sleepEnabled = false;       // keep the wall live for the hit
-            addGround();
+            openGravityWorld(); gWorld.sleepEnabled = false; addGround();
             const int cols = 8, rows = 6;
             for (int r = 0; r < rows; ++r)
                 for (int c = 0; c < cols; ++c) {
-                    double off = (r % 2) ? 1.0 : 0.0;   // running bond
+                    double off = (r % 2) ? 1.0 : 0.0;
                     gWorld.bodies.push_back(makeBox(gNextId++,
                         {(c - cols / 2.0) * 2.0 + off, 1.0 + r * 2.0, 0},
                         Q{1, 0, 0, 0}, {1.0, 1.0, 2.0}, 1.0));
                 }
-            Body ball = makeSphere(gNextId++, {0, 6, 22}, 1.6, 6.0);   // heavy, fast
+            Body ball = makeSphere(gNextId++, {0, 6, 22}, 1.6, 6.0);
             ball.v = {0, 0, -35};
             gWorld.bodies.push_back(ball);
             break;
         }
-        case 3: {  // dominoes: tip the first, watch the chain topple
+        case 3: {  // dominoes
             openGravityWorld(); addGround();
             const int N = 16;
             for (int i = 0; i < N; ++i)
                 gWorld.bodies.push_back(makeBox(gNextId++,
                     {(i - N / 2.0) * 1.5, 2.0, 0}, Q{1, 0, 0, 0}, {0.25, 2.0, 1.2}, 1.0));
-            gWorld.bodies[1].w = {0, 0, -3.0};   // tip the first domino
+            gWorld.bodies[1].w = {0, 0, -3.0};
             gWorld.bodies[1].v = {2.0, 0, 0};
             break;
         }
-        case 4: {  // spheres poured into a heap on the ground
-            openGravityWorld(); gWorld.restitution = 0.1; gWorld.friction = 0.4;
-            addGround();
+        case 4: {  // sphere pile
+            openGravityWorld(); gWorld.restitution = 0.1; gWorld.friction = 0.4; addGround();
             for (int i = 0; i < 140; ++i)
                 gWorld.bodies.push_back(makeSphere(gNextId++, {urand(-6, 6), urand(3, 20), urand(-6, 6)}, 1.0, 1.0));
             break;
         }
-        case 5: {  // cylinders tumbling into a heap on the ground
-            openGravityWorld(); gWorld.restitution = 0.05;
-            addGround();
+        case 5: {  // cylinder pile
+            openGravityWorld(); gWorld.restitution = 0.05; addGround();
             for (int i = 0; i < 60; ++i) {
                 Q q{urand(-1, 1), urand(-1, 1), urand(-1, 1), urand(-1, 1)}; q = q.normalized();
                 gWorld.bodies.push_back(makeCylinder(gNextId++, {urand(-6, 6), urand(3, 20), urand(-6, 6)}, q, 1.0, 4.0, 1.0));
             }
             break;
         }
-        case 6: {  // hanging rope/chain of spheres (rigid joints), released horizontal
+        case 6: {  // hanging rope/chain (rigid joints)
             gWorld.openBoundary = true; gWorld.gravity = {0, -10, 0}; gWorld.box.half = 24;
             Body anchor = makeSphere(gNextId++, {0, 14, 0}, 0.3, 1.0);
             anchor.invMass = 0; anchor.invInertiaBody = {0, 0, 0}; anchor.dynamic = false;
@@ -259,7 +291,7 @@ static void buildScene(int id) {
             for (int i = 0; i < N; ++i) { DistanceJoint j; j.a = i; j.b = i + 1; j.rest = L; gWorld.distanceJoints.push_back(j); }
             break;
         }
-        case 7: {  // elastic sphere gas in a reflective BOX (a genuine container)
+        case 7: {  // elastic sphere gas in a reflective BOX
             gWorld.box.half = 10; gWorld.restitution = 1.0; gShowCell = true;
             for (int i = 0; i < 130; ++i) {
                 Body b = makeSphere(gNextId++, {urand(-8, 8), urand(-8, 8), urand(-8, 8)}, 0.8, 1.0);
@@ -267,7 +299,7 @@ static void buildScene(int id) {
             }
             break;
         }
-        case 8: {  // PERIODIC gas -- the distinctive feature (bodies wrap faces)
+        case 8: {  // PERIODIC gas
             gWorld.box.half = 9; gWorld.box.periodic = true; gWorld.restitution = 1.0; gShowCell = true;
             for (int i = 0; i < 160; ++i) {
                 Body b = makeSphere(gNextId++, {urand(-8.5, 8.5), urand(-8.5, 8.5), urand(-8.5, 8.5)}, 0.8, 1.0);
@@ -286,20 +318,203 @@ static void buildScene(int id) {
     gDist = gWorld.box.half * (gShowCell ? 2.8f : 1.4f);
     gCenter = {0, gShowCell ? 0.0f : 5.0f, 0};
 }
-static const char* sceneName(int id) {
-    switch (id) {
-        case 1: return "box pyramid"; case 2: return "brick wall + projectile"; case 3: return "dominoes";
-        case 4: return "sphere pile"; case 5: return "cylinder pile"; case 6: return "rope";
-        case 7: return "elastic gas (box)"; case 8: return "PERIODIC gas"; case 9: return "PERIODIC pair"; }
-    return "?";
-}
-static void dropSphere() {   // 'd' -- drop a body onto the scene, live
+static const char* kSceneNames[kNumScenes] = {
+    "1 box pyramid", "2 brick wall + projectile", "3 dominoes", "4 sphere pile",
+    "5 cylinder pile", "6 rope", "7 elastic gas (box)", "8 PERIODIC gas", "9 PERIODIC pair"};
+static void dropSphere() {
     Body b = makeSphere(gNextId++, {urand(-4, 4), 20.0, urand(-4, 4)}, 1.2, 1.0);
     gWorld.bodies.push_back(b);
 }
 
-// ------------------------------------------------------------------ render
+static bool isStatic(const Body& b) { return !b.dynamic && b.invMass == 0.0; }
+
+// ------------------------------------------------------------------ picking
+static void cameraRay(int mx, int my, Vec3& origin, Vec3& dir) {
+    float aspect = gWinW / (float)(gWinH ? gWinH : 1);
+    Vec3 eye{gCenter.x + gDist * std::cos(gEl) * std::sin(gAz),
+             gCenter.y + gDist * std::sin(gEl),
+             gCenter.z + gDist * std::cos(gEl) * std::cos(gAz)};
+    Vec3 fwd = (gCenter - eye).norm();
+    Vec3 right = fwd.cross({0, 1, 0}).norm();
+    Vec3 up = right.cross(fwd);
+    float tanHalf = std::tan(45.0f * 3.14159f / 180.0f * 0.5f);
+    float ndcx = (2.0f * (mx + 0.5f) / gWinW - 1.0f) * tanHalf * aspect;
+    float ndcy = (1.0f - 2.0f * (my + 0.5f) / gWinH) * tanHalf;
+    origin = eye;
+    dir = (fwd + right * ndcx + up * ndcy).norm();
+}
+static void pick(int mx, int my) {
+    Vec3 o, d; cameraRay(mx, my, o, d);
+    int best = -1; float bestT = 1e30f;
+    for (size_t i = 0; i < gWorld.bodies.size(); ++i) {
+        const Body& b = gWorld.bodies[i];
+        Vec3 ctr = v3(b.x); float r = (float)b.boundingRadius();
+        Vec3 m = o - ctr; float bb = m.dot(d), cc = m.dot(m) - r * r;
+        if (cc > 0 && bb > 0) continue;
+        float disc = bb * bb - cc; if (disc < 0) continue;
+        float t = -bb - std::sqrt(disc); if (t < 0) t = 0;
+        if (t < bestT) { bestT = t; best = (int)i; }
+    }
+    gSelected = best;   // -1 (empty click) deselects
+}
+
+// ------------------------------------------------------------------ UI
+static float gKE[180] = {0}; static int gKEHead = 0;
+static void pushKE(float e) { gKE[gKEHead] = e; gKEHead = (gKEHead + 1) % 180; }
+
+static void buildUI() {
+    ImGuiIO& io = ImGui::GetIO();
+    const char* shapeName[3] = {"sphere", "cylinder", "box"};
+
+    // ---- Simulation -------------------------------------------------------
+    ImGui::SetNextWindowPos({10, 10}, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize({330, 300}, ImGuiCond_FirstUseEver);
+    ImGui::Begin("Simulation");
+    int sceneIdx = gScene - 1;
+    if (ImGui::Combo("scene", &sceneIdx, kSceneNames, kNumScenes)) buildScene(sceneIdx + 1);
+    if (ImGui::Button(gPaused ? "Play" : "Pause")) gPaused = !gPaused;
+    ImGui::SameLine(); if (ImGui::Button("Step")) { gWorld.captureContacts = gViz.contacts; gWorld.step(); gSimTime += gWorld.dt; }
+    ImGui::SameLine(); if (ImGui::Button("Reset")) buildScene(gScene);
+    ImGui::SameLine(); if (ImGui::Button("Drop")) dropSphere();
+    ImGui::SliderInt("substeps/frame", &gStepsPerFrame, 1, 16);
+    ImGui::Text("dt = 1/%.0f s    sim t = %.2f s", 1.0 / gWorld.dt, gSimTime);
+    ImGui::Separator();
+    bool grav = (gWorld.gravity.y != 0.0);
+    if (ImGui::Checkbox("gravity", &grav)) gWorld.gravity.y = grav ? -10.0 : 0.0;
+    float rest = (float)gWorld.restitution, fric = (float)gWorld.friction;
+    if (ImGui::SliderFloat("restitution", &rest, 0.0f, 1.0f)) gWorld.restitution = rest;
+    if (ImGui::SliderFloat("friction", &fric, 0.0f, 1.5f)) gWorld.friction = fric;
+    bool sleep = gWorld.sleepEnabled;
+    if (ImGui::Checkbox("sleeping", &sleep)) gWorld.sleepEnabled = sleep;
+    ImGui::TextDisabled("space pause | n next | r reset | d drop | h camera");
+    ImGui::End();
+
+    // ---- Visualization ----------------------------------------------------
+    ImGui::SetNextWindowPos({10, 320}, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize({330, 210}, ImGuiCond_FirstUseEver);
+    ImGui::Begin("Visualization");
+    ImGui::Checkbox("velocity arrows", &gViz.arrows);
+    ImGui::SameLine(); ImGui::SetNextItemWidth(90); ImGui::SliderFloat("scale", &gViz.velScale, 0.02f, 1.0f);
+    ImGui::Checkbox("contact points + normals", &gViz.contacts);
+    ImGui::Checkbox("bounding boxes", &gViz.aabb);
+    ImGui::Checkbox("dim sleeping bodies", &gViz.dimSleep);
+    ImGui::Checkbox("ground grid", &gViz.grid);
+    if (gWorld.box.periodic) ImGui::Checkbox("periodic ghost images", &gViz.ghosts);
+    else ImGui::Checkbox("always show domain box", &gViz.showCellAlways);
+    ImGui::TextDisabled("click a body to select   yellow=contact  cyan=normal");
+    ImGui::End();
+
+    // ---- Statistics -------------------------------------------------------
+    int awake = 0, sleeping = 0, statics = 0;
+    for (const Body& b : gWorld.bodies) {
+        if (isStatic(b)) ++statics; else if (b.sleeping) ++sleeping; else ++awake;
+    }
+    double ke = gWorld.totalKinetic();
+    V3 P = gWorld.totalLinearMomentum(), L = gWorld.totalAngularMomentum();
+    ImGui::SetNextWindowPos({(float)gWinW - 340, 10}, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize({330, 250}, ImGuiCond_FirstUseEver);
+    ImGui::Begin("Statistics");
+    ImGui::Text("%.1f FPS   (%.2f ms/frame)", io.Framerate, 1000.0f / io.Framerate);
+    ImGui::Separator();
+    ImGui::Text("bodies    : %zu", gWorld.bodies.size());
+    ImGui::Text("awake %d   sleeping %d   static %d", awake, sleeping, statics);
+    ImGui::Text("contacts  : %zu", gWorld.debugContacts.size());
+    ImGui::Separator();
+    ImGui::Text("kinetic E : %.3f", ke);
+    ImGui::Text("|momentum|: %.3f", std::sqrt(P.dot(P)));
+    ImGui::Text("|ang.mom.|: %.3f", std::sqrt(L.dot(L)));
+    ImGui::PlotLines("KE", gKE, 180, gKEHead, nullptr, 0.0f, FLT_MAX, {310, 60});
+    ImGui::End();
+
+    // ---- Scene hierarchy --------------------------------------------------
+    ImGui::SetNextWindowPos({(float)gWinW - 340, 270}, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize({330, 300}, ImGuiCond_FirstUseEver);
+    ImGui::Begin("Scene Hierarchy");
+    ImGui::Text("%zu bodies", gWorld.bodies.size());
+    ImGui::BeginChild("list");
+    for (size_t i = 0; i < gWorld.bodies.size(); ++i) {
+        const Body& b = gWorld.bodies[i];
+        char lbl[96];
+        std::snprintf(lbl, sizeof lbl, "#%d  %s%s", b.id, shapeName[(int)b.shape],
+                      isStatic(b) ? "  [static]" : (b.sleeping ? "  [sleep]" : ""));
+        if (ImGui::Selectable(lbl, gSelected == (int)i)) gSelected = (int)i;
+    }
+    ImGui::EndChild();
+    ImGui::End();
+
+    // ---- Inspector --------------------------------------------------------
+    ImGui::SetNextWindowPos({(float)gWinW - 340, 580}, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize({330, 300}, ImGuiCond_FirstUseEver);
+    ImGui::Begin("Inspector");
+    if (gSelected >= 0 && gSelected < (int)gWorld.bodies.size()) {
+        Body& b = gWorld.bodies[gSelected];
+        ImGui::Text("body #%d  (%s)", b.id, shapeName[(int)b.shape]);
+        ImGui::Text("%s%s", isStatic(b) ? "static" : "dynamic", b.sleeping ? ", sleeping" : "");
+        if (!isStatic(b)) ImGui::Text("mass = %.3f", 1.0 / b.invMass);
+        if (b.shape == Shape::Sphere) ImGui::Text("radius = %.3f", b.radius);
+        else if (b.shape == Shape::Cylinder) ImGui::Text("r = %.3f  halfH = %.3f", b.radius, b.halfHeight);
+        else ImGui::Text("half = (%.2f, %.2f, %.2f)", b.halfExtents.x, b.halfExtents.y, b.halfExtents.z);
+        ImGui::Separator();
+        float pos[3] = {(float)b.x.x, (float)b.x.y, (float)b.x.z};
+        if (ImGui::DragFloat3("position", pos, 0.05f)) { b.x = {pos[0], pos[1], pos[2]}; World::wake(b); }
+        float vel[3] = {(float)b.v.x, (float)b.v.y, (float)b.v.z};
+        if (ImGui::DragFloat3("velocity", vel, 0.05f)) { b.v = {vel[0], vel[1], vel[2]}; World::wake(b); }
+        float av[3] = {(float)b.w.x, (float)b.w.y, (float)b.w.z};
+        if (ImGui::DragFloat3("ang. vel.", av, 0.05f)) { b.w = {av[0], av[1], av[2]}; World::wake(b); }
+        ImGui::Text("quat wxyz  %.3f %.3f %.3f %.3f", b.q.w, b.q.x, b.q.y, b.q.z);
+        if (b.sleeping) { ImGui::SameLine(); if (ImGui::SmallButton("wake")) World::wake(b); }
+        if (ImGui::Button("give upward impulse")) { b.v.y += 8.0; World::wake(b); }
+    } else {
+        ImGui::TextDisabled("no body selected");
+        ImGui::TextDisabled("click a body in the viewport or the hierarchy");
+    }
+    ImGui::End();
+}
+
+// ------------------------------------------------------------------ 3D overlays
+static void buildDebugLines() {
+    gLines.clear();
+    if (gViz.grid && !gShowCell) {
+        float e = 30.0f; Vec3 gc{0.24f, 0.26f, 0.30f};
+        for (int i = -30; i <= 30; i += 3) { line({(float)i, 0, -e}, {(float)i, 0, e}, gc); line({-e, 0, (float)i}, {e, 0, (float)i}, gc); }
+    }
+    if (gViz.arrows) {
+        for (const Body& b : gWorld.bodies) {
+            if (isStatic(b)) continue;
+            Vec3 p = v3(b.x), tip = p + v3(b.v) * gViz.velScale;
+            float sp = (float)b.v.norm();
+            Vec3 col = sp > 4 ? Vec3{1.0f, 0.4f, 0.2f} : Vec3{0.4f, 0.9f, 0.5f};
+            line(p, tip, col);
+        }
+    }
+    if (gViz.aabb) {
+        for (const Body& b : gWorld.bodies)
+            if (!isStatic(b)) aabb(v3(b.x), (float)b.boundingRadius(), {0.3f, 0.5f, 0.35f});
+    }
+    if (gViz.contacts) {
+        for (const ContactViz& c : gWorld.debugContacts) {
+            Vec3 p = v3(c.point);
+            cross3(p, 0.18f, {1.0f, 0.95f, 0.2f});
+            line(p, p + v3(c.normal) * 0.7f, {0.2f, 0.85f, 1.0f});
+        }
+    }
+    if (gSelected >= 0 && gSelected < (int)gWorld.bodies.size())
+        aabb(v3(gWorld.bodies[gSelected].x), (float)gWorld.bodies[gSelected].boundingRadius() * 1.05f, {1, 1, 1});
+}
+
 static void display() {
+    // step the engine live (unless paused)
+    gWorld.captureContacts = gViz.contacts;
+    if (!gPaused) for (int i = 0; i < gStepsPerFrame; ++i) { gWorld.step(); gSimTime += gWorld.dt; }
+    pushKE((float)gWorld.totalKinetic());
+
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplGLUT_NewFrame();
+    ImGui::NewFrame();
+    buildUI();
+    ImGui::Render();
+
+    glEnable(GL_DEPTH_TEST); glDisable(GL_BLEND); glDisable(GL_SCISSOR_TEST);
     glClearColor(0.09f, 0.10f, 0.12f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     float aspect = gWinW / (float)(gWinH ? gWinH : 1);
@@ -308,13 +523,14 @@ static void display() {
              gCenter.z + gDist * std::cos(gEl) * std::cos(gAz)};
     Mat4 VP = Mat4::perspective(45.0f * 3.14159f / 180.0f, aspect, 0.1f, 5000.0f) *
               Mat4::lookAt(eye, gCenter, {0, 1, 0});
+
     glUseProgram(gProg);
     glUniformMatrix4fv(gUVP, 1, GL_FALSE, VP.m);
     glUniform3fv(gUCam, 1, &eye.x);
     Vec3 lightDir = Vec3{-0.4f, -1.0f, -0.3f}.norm();
     glUniform3fv(gULight, 1, &lightDir.x);
 
-    if (gShowCell) {   // the reflective box / periodic cell -- not for open scenes
+    if (gShowCell || gViz.showCellAlways) {
         float R = (float)gWorld.box.half;
         gWire.instData.clear(); gWire.instCount = 0;
         pushInstance(gWire, Mat4::scale({R, R, R}), {0.40f, 0.45f, 0.55f});
@@ -324,79 +540,137 @@ static void display() {
     gSphere.instData.clear(); gSphere.instCount = 0;
     gCyl.instData.clear(); gCyl.instCount = 0;
     gBox.instData.clear(); gBox.instCount = 0;
-    for (const Body& b : gWorld.bodies) {
-        Mat4 T = Mat4::translate({(float)b.x.x, (float)b.x.y, (float)b.x.z});
+    auto emit = [&](const Body& b, const Vec3& shift, const Vec3& col) {
+        Mat4 T = Mat4::translate({(float)b.x.x + shift.x, (float)b.x.y + shift.y, (float)b.x.z + shift.z});
         Mat4 Rm = Mat4::fromQuat((float)b.q.w, (float)b.q.x, (float)b.q.y, (float)b.q.z);
-        bool isStatic = (!b.dynamic && b.invMass == 0.0);
-        Vec3 col = palette(b.id, b.shape, b.sleeping, isStatic);
         if (b.shape == Shape::Sphere)
             pushInstance(gSphere, T * Rm * Mat4::scale({(float)b.radius, (float)b.radius, (float)b.radius}), col);
         else if (b.shape == Shape::Box)
             pushInstance(gBox, T * Rm * Mat4::scale({(float)b.halfExtents.x, (float)b.halfExtents.y, (float)b.halfExtents.z}), col);
         else
             pushInstance(gCyl, T * Rm * Mat4::scale({(float)b.radius, (float)b.halfHeight, (float)b.radius}), col);
+    };
+    float edge = (float)gWorld.box.edge();
+    for (size_t i = 0; i < gWorld.bodies.size(); ++i) {
+        const Body& b = gWorld.bodies[i];
+        Vec3 col = palette(b.id, b.shape, b.sleeping, isStatic(b));
+        if ((int)i == gSelected) col = col * 0.5f + Vec3{0.5f, 0.5f, 0.2f};
+        emit(b, {0, 0, 0}, col);
+        if (gViz.ghosts && gWorld.box.periodic && !isStatic(b)) {
+            float h = (float)gWorld.box.half, r = (float)b.boundingRadius();
+            float cc[3] = {(float)b.x.x, (float)b.x.y, (float)b.x.z};
+            for (int a = 0; a < 3; ++a) {
+                if (cc[a] > h - r) { Vec3 s{0, 0, 0}; (&s.x)[a] = -edge; emit(b, s, col * 0.5f); }
+                if (cc[a] < -h + r) { Vec3 s{0, 0, 0}; (&s.x)[a] = edge; emit(b, s, col * 0.5f); }
+            }
+        }
     }
     drawMesh(gSphere, 0); drawMesh(gCyl, 0); drawMesh(gBox, 0);
+
+    buildDebugLines();
+    if (!gLines.empty()) {
+        glUseProgram(gLineProg);
+        glUniformMatrix4fv(gLUVP, 1, GL_FALSE, VP.m);
+        glBindVertexArray(gLineVao);
+        glBindBuffer(GL_ARRAY_BUFFER, gLineVbo);
+        glBufferData(GL_ARRAY_BUFFER, gLines.size() * sizeof(float), gLines.data(), GL_DYNAMIC_DRAW);
+        glDrawArrays(GL_LINES, 0, (GLsizei)(gLines.size() / 6));
+        glBindVertexArray(0);
+    }
+
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     glutSwapBuffers();
 }
 
-static void reshape(int w, int h) { gWinW = w; gWinH = h; glViewport(0, 0, w, h); }
-static void timer(int) {
-    if (!gPaused) for (int i = 0; i < gStepsPerFrame; ++i) gWorld.step();
-    glutPostRedisplay();
-    glutTimerFunc(16, timer, 0);
-}
-static void key(unsigned char k, int, int) {
+// ------------------------------------------------------------------ input
+static void reshape(int w, int h) { gWinW = w; gWinH = h; glViewport(0, 0, w, h); ImGui_ImplGLUT_ReshapeFunc(w, h); }
+static void timer(int) { glutPostRedisplay(); glutTimerFunc(16, timer, 0); }
+
+static void key(unsigned char k, int x, int y) {
+    ImGui_ImplGLUT_KeyboardFunc(k, x, y);
+    if (ImGui::GetIO().WantCaptureKeyboard) return;
     switch (k) {
         case 27: glutLeaveMainLoop(); break;
         case ' ': gPaused = !gPaused; break;
-        case 'r': buildScene(gScene); break;                       // reset current scene
-        case 'n': buildScene(gScene % kNumScenes + 1); break;      // next scene
-        case 'd': dropSphere(); break;                             // drop a body (live)
-        case ',': if (gStepsPerFrame > 1) --gStepsPerFrame; break; // slower
-        case '.': ++gStepsPerFrame; break;                         // faster
+        case 'r': buildScene(gScene); break;
+        case 'n': buildScene(gScene % kNumScenes + 1); break;
+        case 'd': dropSphere(); break;
+        case ',': if (gStepsPerFrame > 1) --gStepsPerFrame; break;
+        case '.': if (gStepsPerFrame < 16) ++gStepsPerFrame; break;
         case 'h': gDist = gWorld.box.half * (gShowCell ? 2.8f : 1.4f);
                   gAz = 0.7f; gEl = 0.45f; gCenter = {0, gShowCell ? 0.0f : 5.0f, 0}; break;
-        default:
-            if (k >= '1' && k <= '9') buildScene(k - '0');
+        default: if (k >= '1' && k <= '9') buildScene(k - '0');
     }
-    std::printf("scene %d (%s)  bodies=%zu  %s  stepsPerFrame=%d\n",
-                gScene, sceneName(gScene), gWorld.bodies.size(), gPaused ? "PAUSED" : "running", gStepsPerFrame);
-    glutPostRedisplay();
 }
+static void keyUp(unsigned char k, int x, int y) { ImGui_ImplGLUT_KeyboardUpFunc(k, x, y); }
+static void special(int k, int x, int y) { ImGui_ImplGLUT_SpecialFunc(k, x, y); }
+static void specialUp(int k, int x, int y) { ImGui_ImplGLUT_SpecialUpFunc(k, x, y); }
+
 static void mouse(int b, int st, int x, int y) {
-    if (b == GLUT_LEFT_BUTTON) { gDrag = (st == GLUT_DOWN); gLastX = x; gLastY = y; }
-    if (b == 3) gDist *= 0.9f; if (b == 4) gDist *= 1.1f;
-    glutPostRedisplay();
+    ImGui_ImplGLUT_MouseFunc(b, st, x, y);
+    if (ImGui::GetIO().WantCaptureMouse) { gDrag = false; return; }
+    if (b == GLUT_LEFT_BUTTON) {
+        gDrag = (st == GLUT_DOWN); gLastX = x; gLastY = y;
+        if (st == GLUT_DOWN) pick(x, y);
+    }
+}
+static void wheel(int b, int dir, int x, int y) {
+    ImGui_ImplGLUT_MouseWheelFunc(b, dir, x, y);
+    if (ImGui::GetIO().WantCaptureMouse) return;
+    gDist *= (dir > 0) ? 0.9f : 1.1f;
 }
 static void motion(int x, int y) {
+    ImGui_ImplGLUT_MotionFunc(x, y);
+    if (ImGui::GetIO().WantCaptureMouse) return;
     if (gDrag) { gAz -= (x - gLastX) * 0.01f; gEl += (y - gLastY) * 0.01f;
-        if (gEl > 1.5f) gEl = 1.5f; if (gEl < -1.5f) gEl = -1.5f; gLastX = x; gLastY = y; glutPostRedisplay(); }
+        if (gEl > 1.5f) gEl = 1.5f; if (gEl < -1.5f) gEl = -1.5f; gLastX = x; gLastY = y; }
 }
+static void passiveMotion(int x, int y) { ImGui_ImplGLUT_MotionFunc(x, y); }
 
 int main(int argc, char** argv) {
     int scene = 1;
     if (argc >= 2) scene = std::atoi(argv[1]);
-    if (scene < 1 || scene > 7) scene = 1;
+    if (scene < 1 || scene > kNumScenes) scene = 1;
 
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA | GLUT_DEPTH | GLUT_MULTISAMPLE);
     glutSetOption(GLUT_MULTISAMPLE, 8);
     glutInitContextVersion(3, 3); glutInitContextProfile(GLUT_CORE_PROFILE);
     glutInitWindowSize(gWinW, gWinH);
-    glutCreateWindow("NativeEngine LIVE  [1-7 scene  n next  r reset  d drop  space pause  , . speed  h cam  drag orbit]");
+    glutCreateWindow("NativeEngine Visual Debugger");
     if (!loadGL()) { std::fprintf(stderr, "failed to load OpenGL 3.3\n"); return 1; }
     glEnable(GL_DEPTH_TEST); glEnable(GL_MULTISAMPLE);
+
     gProg = link(kVert, kFrag);
     gUVP = glGetUniformLocation(gProg, "uVP"); gUCam = glGetUniformLocation(gProg, "uCam");
     gULight = glGetUniformLocation(gProg, "uLight"); gUUnlit = glGetUniformLocation(gProg, "uUnlit");
+    gLineProg = link(kLineVert, kLineFrag); gLUVP = glGetUniformLocation(gLineProg, "uVP");
+    glGenVertexArrays(1, &gLineVao); glBindVertexArray(gLineVao);
+    glGenBuffers(1, &gLineVbo); glBindBuffer(GL_ARRAY_BUFFER, gLineVbo);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0); glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float))); glEnableVertexAttribArray(1);
+    glBindVertexArray(0);
     makeSphere(gSphere); makeCylinder(gCyl); makeBox(gBox); makeWireBox(gWire);
     buildScene(scene);
 
-    std::printf("NativeEngine live viewer. Scenes: 1 box-stack  2 pile  3 cylinders  4 gas  5 PERIODIC-gas  6 pendulum  7 PERIODIC-pair\n");
+    IMGUI_CHECKVERSION(); ImGui::CreateContext();
+    ImGui::StyleColorsDark();
+    ImGui::GetIO().FontGlobalScale = 1.15f;
+    ImGui_ImplGLUT_Init();
+    ImGui_ImplOpenGL3_Init("#version 330");
+
     glutDisplayFunc(display); glutReshapeFunc(reshape);
-    glutKeyboardFunc(key); glutMouseFunc(mouse); glutMotionFunc(motion);
+    glutKeyboardFunc(key); glutKeyboardUpFunc(keyUp);
+    glutSpecialFunc(special); glutSpecialUpFunc(specialUp);
+    glutMouseFunc(mouse); glutMotionFunc(motion); glutPassiveMotionFunc(passiveMotion);
+    glutMouseWheelFunc(wheel);
     glutTimerFunc(16, timer, 0);
+
+    std::printf("NativeEngine Visual Debugger -- live, interactive. Scenes 1..9; click to select a body.\n");
     glutMainLoop();
+
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGLUT_Shutdown();
+    ImGui::DestroyContext();
     return 0;
 }

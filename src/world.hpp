@@ -23,6 +23,15 @@ struct DistanceJoint {
     double damping = 0.0;
 };
 
+// A resolved contact point, captured for debug visualization (opt-in). point and
+// normal are in world space; normal points from body j toward body i.
+struct ContactViz {
+    V3 point;
+    V3 normal;
+    double depth = 0.0;
+    std::size_t i = 0, j = 0;
+};
+
 // The simulation world: a set of rigid bodies in a (periodic or reflective) box,
 // advanced by a fixed-timestep symplectic integrator with impulse-based hard
 // contact. "Ballistic between contacts" holds because forces are zero unless a
@@ -60,6 +69,12 @@ public:
 
     std::vector<Body> bodies;
     std::vector<DistanceJoint> distanceJoints;
+
+    // Debug: when captureContacts is set, collide() records each resolved contact
+    // point into debugContacts (cleared each step). Off by default -- zero cost to
+    // the solver; a tool (the viewer) turns it on to draw contacts.
+    bool captureContacts = false;
+    std::vector<ContactViz> debugContacts;
 
     void step();
     static void wake(Body& b);

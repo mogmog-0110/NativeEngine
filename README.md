@@ -70,11 +70,17 @@ MitiruEngine binding (via the sgc shim):
 
 Core + selftest + binding require only MSVC (VS 2022) — no external SDK.
 
-## Live demos
+## Visual Debugger
 
-The viewer steps the engine in real time (not a recording) and is interactive —
-classic PhysX-snippet scenes on an open ground, plus the periodic-boundary
-feature demos. Requires freeglut (`FREEGLUT_ROOT`, default `E:\dev\freeglut`).
+A live, interactive debugger in the spirit of the PhysX Visual Debugger: it
+**steps the engine in real time** (not a recording) inside a Dear ImGui UI —
+simulation controls, a scene hierarchy, a per-body inspector, live statistics
+(FPS, body / contact counts, energy + momentum with a KE plot), and 3D debug
+overlays (velocity arrows, **contact points + normals**, AABBs, selection
+highlight, periodic ghost images). Click a body to select and inspect it, and
+edit its pose / velocity live. Requires freeglut (`FREEGLUT_ROOT`, default
+`E:\dev\freeglut`); Dear ImGui is vendored under `viewer/third_party/imgui`
+(MIT — see its `LICENSE.txt`).
 
     viewer\build_viewer.bat
     build\NativeViewer.exe 1        # 1 pyramid  2 brick-wall+ball  3 dominoes
@@ -82,11 +88,12 @@ feature demos. Requires freeglut (`FREEGLUT_ROOT`, default `E:\dev\freeglut`).
                                     # 7 elastic gas (box)  8 PERIODIC gas  9 PERIODIC pair
 
 Keys: `1`-`9` scene · `n` next · `r` reset · `d` drop a body · `space` pause ·
-`,`/`.` sim speed · `h` recenter camera · drag to orbit · wheel to zoom.
+`,`/`.` sim speed · `h` recenter camera · left-drag orbit · wheel zoom · click to
+pick. Everything is also on the UI panels.
 
 ## Status
 
-Game-physics core + MitiruEngine binding + live interactive viewer: complete and
+Game-physics core + MitiruEngine binding + live visual debugger: complete and
 tested. The macrocycle science use (reproduce the PhysX reflective results, then
 run the native-PBC experiment) lives in the consuming project as a bridge, and
 reuses the bonding joints and science layer.

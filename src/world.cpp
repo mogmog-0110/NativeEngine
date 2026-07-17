@@ -225,6 +225,7 @@ std::vector<std::pair<std::size_t, std::size_t>> World::broadphasePairs() const 
 void World::collide() {
     // 1. Detect: build a constraint per overlapping pair, in sorted (i<j) order.
     std::vector<Constraint> cons;
+    if (captureContacts) debugContacts.clear();
     for (const auto& pr : broadphasePairs()) {
         {
             Body& a = bodies[pr.first];
@@ -262,6 +263,7 @@ void World::collide() {
                 double vn = vc.dot(k.n);
                 k.restBias = (vn < -kRestitutionSlop) ? -restitution * vn : 0.0;
                 cons.push_back(k);
+                if (captureContacts) debugContacts.push_back({pts[p], c.normal, deps[p], i, j});
             }
         }
     }
