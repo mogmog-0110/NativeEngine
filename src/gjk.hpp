@@ -16,13 +16,20 @@ namespace ne {
 // means; PhysX faceted it into a 16-gon, but the exact convex is cleaner here.)
 inline V3 supportWorld(const Body& b, const V3& d) {
     if (b.isSphere()) return b.x + d.normalized() * b.radius;
-    // Cylinder: axis along body +Y. Support = farther cap plane along y, and the
-    // rim in the radial direction.
     V3 db = b.q.inverseRotate(d);
-    double sy = (db.y >= 0.0) ? b.halfHeight : -b.halfHeight;
-    double rho = std::sqrt(db.x * db.x + db.z * db.z);
-    V3 sb = (rho > 1e-12) ? V3{db.x / rho * b.radius, sy, db.z / rho * b.radius}
-                          : V3{0.0, sy, 0.0};
+    V3 sb;
+    if (b.shape == Shape::Box) {
+        // Farthest corner along each axis.
+        sb = V3{(db.x >= 0 ? b.halfExtents.x : -b.halfExtents.x),
+                (db.y >= 0 ? b.halfExtents.y : -b.halfExtents.y),
+                (db.z >= 0 ? b.halfExtents.z : -b.halfExtents.z)};
+    } else {
+        // Cylinder: axis along body +Y. Farther cap plane along y, rim radially.
+        double sy = (db.y >= 0.0) ? b.halfHeight : -b.halfHeight;
+        double rho = std::sqrt(db.x * db.x + db.z * db.z);
+        sb = (rho > 1e-12) ? V3{db.x / rho * b.radius, sy, db.z / rho * b.radius}
+                           : V3{0.0, sy, 0.0};
+    }
     return b.x + b.q.rotate(sb);
 }
 

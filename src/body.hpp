@@ -10,7 +10,7 @@ namespace ne {
 // the parameters the narrow phase needs. Inertia is stored as the DIAGONAL of
 // the inverse body-frame inertia tensor, valid because both shapes are integrated
 // about their principal axes.
-enum class Shape { Sphere, Cylinder };
+enum class Shape { Sphere, Cylinder, Box };
 
 struct Body {
     // State
@@ -31,6 +31,7 @@ struct Body {
     Shape shape = Shape::Sphere;
     double radius = 1.0;       // sphere radius, or cylinder radius
     double halfHeight = 0.0;   // cylinder half-height (0 for sphere)
+    V3 halfExtents;            // box half-extents (Box only)
 
     int id = -1;               // stable id (sphere ids and cylinder ids are
                                // separate namespaces, matching the science layer)
@@ -103,6 +104,28 @@ inline Body makeCylinder(int id, const V3& x, const Q& q, double radius,
     b.invInertiaBody = {Ixx > 0 ? 1.0 / Ixx : 0.0,
                         Iyy > 0 ? 1.0 / Iyy : 0.0,
                         Ixx > 0 ? 1.0 / Ixx : 0.0};
+    return b;
+}
+
+// Factory: a solid box with the given half-extents (games' bread-and-butter
+// shape). Handled by the same GJK/EPA convex machinery as the cylinder.
+inline Body makeBox(int id, const V3& x, const Q& q, const V3& halfExtents,
+                    double density) {
+    Body b;
+    b.shape = Shape::Box;
+    b.id = id;
+    b.x = x;
+    b.q = q;
+    b.halfExtents = halfExtents;
+    const double hx = halfExtents.x, hy = halfExtents.y, hz = halfExtents.z;
+    double m = density * 8.0 * hx * hy * hz;
+    b.invMass = (m > 0) ? 1.0 / m : 0.0;
+    double Ix = (1.0 / 3.0) * m * (hy * hy + hz * hz);   // (1/12) m ((2hy)^2+(2hz)^2)
+    double Iy = (1.0 / 3.0) * m * (hx * hx + hz * hz);
+    double Iz = (1.0 / 3.0) * m * (hx * hx + hy * hy);
+    b.invInertiaBody = {Ix > 0 ? 1.0 / Ix : 0.0,
+                        Iy > 0 ? 1.0 / Iy : 0.0,
+                        Iz > 0 ? 1.0 / Iz : 0.0};
     return b;
 }
 

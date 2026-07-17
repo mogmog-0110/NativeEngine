@@ -54,29 +54,31 @@ void World::collide() {
             Body& b = bodies[j];
             if (a.invMass + b.invMass <= 0.0) continue;
 
+            const bool sphereCyl =
+                (a.isSphere() && b.shape == Shape::Cylinder) ||
+                (b.isSphere() && a.shape == Shape::Cylinder);
+
             if (a.isSphere() && b.isSphere()) {
+                // Sphere-sphere: fast analytic path (contact on the line of
+                // centres, no spin), through the same general resolver.
                 V3 d = box.minImage(a.x - b.x);           // b -> a, nearest image
                 double sumR = a.radius + b.radius;
                 double dist2 = d.norm2();
                 if (dist2 >= sumR * sumR || dist2 < 1e-18) continue;
                 double dist = std::sqrt(dist2);
                 V3 normal = d / dist;                      // b -> a
-                // Contact on the line of centres: lever arms along +-normal, so
-                // no spin, but through the same general resolver.
                 resolveContact(a, b, normal * (-a.radius), normal * (b.radius),
                                normal, restitution);
                 correctPenetration(a, b, normal, sumR - dist, contactBeta);
-            } else if (a.isSphere() != b.isSphere()) {
-                // One sphere, one cylinder. Resolve as (sphere = A, cylinder = B)
-                // so the contact normal points from the cylinder toward the sphere.
+            } else if (sphereCyl) {
+                // Sphere-cylinder: exact analytic narrow phase (sphere = A so the
+                // normal points from the cylinder toward the sphere).
                 Body& sph = a.isSphere() ? a : b;
                 Body& cyl = a.isSphere() ? b : a;
                 Contact c = sphereVsCylinder(sph, cyl, box);
                 if (!c.hit) continue;
-                V3 rSph = c.point - sph.x;
-                V3 rCyl = box.minImage(c.point - cyl.x);
-                resolveContact(sph, cyl, rSph, rCyl, c.normal, restitution);
-                // Positional correction along the (off-centre) contact normal.
+                resolveContact(sph, cyl, c.point - sph.x, box.minImage(c.point - cyl.x),
+                               c.normal, restitution);
                 double invSum = sph.invMass + cyl.invMass;
                 if (invSum > 0.0) {
                     V3 corr = c.normal * (contactBeta * c.overlap / invSum);
@@ -84,14 +86,12 @@ void World::collide() {
                     cyl.x -= corr * cyl.invMass;
                 }
             } else {
-                // Two non-spheres (cylinder-cylinder, and boxes later): general
-                // convex contact via GJK + EPA. A = bodies[i], B = bodies[j];
-                // the normal points from B toward A.
+                // Everything else (box-*, cylinder-cylinder): general convex
+                // contact via GJK + EPA. Normal points from B (=bodies[j]) to A.
                 Contact c = convexContact(a, b, box);
                 if (!c.hit) continue;
-                V3 rA = box.minImage(c.point - a.x);
-                V3 rB = box.minImage(c.point - b.x);
-                resolveContact(a, b, rA, rB, c.normal, restitution);
+                resolveContact(a, b, box.minImage(c.point - a.x),
+                               box.minImage(c.point - b.x), c.normal, restitution);
                 double invSum = a.invMass + b.invMass;
                 if (invSum > 0.0) {
                     V3 corr = c.normal * (contactBeta * c.overlap / invSum);

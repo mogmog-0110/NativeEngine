@@ -437,6 +437,49 @@ void test_cylinder_cylinder_dynamics() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 14. Box shape: EPA geometry for an axis-aligned overlap, and dynamic box-box
+//     + sphere-box collisions conserve momentum + energy and don't tunnel.
+// ---------------------------------------------------------------------------
+void test_box() {
+    Box box; box.periodic = false; box.half = 100.0;
+
+    // Two unit boxes (half-extent 1) overlapping along x by 0.5: normal ~x, depth 0.5.
+    Body b1 = makeBox(0, V3{0, 0, 0}, Q{1, 0, 0, 0}, V3{1, 1, 1}, 1.0);
+    Body b2 = makeBox(1, V3{1.5, 0, 0}, Q{1, 0, 0, 0}, V3{1, 1, 1}, 1.0);
+    Contact bb = convexContact(b1, b2, box);            // A=b1, normal B->A = -x
+    check(bb.hit && std::fabs(std::fabs(bb.normal.x) - 1.0) < 1e-3 &&
+              std::fabs(bb.overlap - 0.5) < 1e-3,
+          "box: axis-aligned overlap -- normal along x, depth 0.5");
+
+    // Sphere overlapping a box face.
+    Body sB = makeBox(2, V3{0, 0, 0}, Q{1, 0, 0, 0}, V3{1, 1, 1}, 1.0);
+    Body sS = makeSphere(3, V3{1.6, 0, 0}, 1.0, 1.0);   // face at x=1, sphere reaches 0.6
+    Contact sb = convexContact(sS, sB, box);
+    check(sb.hit && (sb.normal - V3{1, 0, 0}).norm() < 1e-2 &&
+              std::fabs(sb.overlap - 0.4) < 1e-2,
+          "box: sphere-box face contact (normal +x, depth 0.4)");
+
+    // Dynamic box-box head-on: conserve p + E, actually collide (no tunnel).
+    World w;
+    w.box.half = 100.0; w.box.periodic = false; w.restitution = 1.0; w.dt = 1e-3;
+    Body a = makeBox(0, V3{-2.5, 0, 0}, Q{1, 0, 0, 0}, V3{1, 1, 1}, 1.0);
+    Body b = makeBox(1, V3{ 2.5, 0, 0}, Q{1, 0, 0, 0}, V3{1, 1, 1}, 1.0);
+    a.v = V3{ 1.5, 0, 0}; b.v = V3{-1.5, 0, 0};
+    w.bodies = {a, b};
+    auto P = [&] { V3 p; for (auto& x : w.bodies) p += x.v * (1.0 / x.invMass); return p; };
+    auto E = [&] { double e = 0; for (auto& x : w.bodies) e += x.kinetic(); return e; };
+    V3 p0 = P(); double e0 = E(); double minSep = 1e9;
+    for (int s = 0; s < 6000; ++s) {
+        w.step();
+        double sep = (w.bodies[0].x - w.bodies[1].x).norm();
+        if (sep < minSep) minSep = sep;
+    }
+    check(closeV(P(), p0, 1e-6), "box-box: linear momentum conserved");
+    check(std::fabs(E() - e0) / e0 < 1e-3, "box-box: energy conserved");
+    check(minSep > 1.7 && minSep < 2.3, "box-box: real collision, no tunneling");
+}
+
 }  // namespace
 
 int runSelftest() {
@@ -454,6 +497,7 @@ int runSelftest() {
     test_gjk_overlap();
     test_epa_contact();
     test_cylinder_cylinder_dynamics();
+    test_box();
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
