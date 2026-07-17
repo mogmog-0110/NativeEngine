@@ -36,6 +36,17 @@ struct Body {
     int id = -1;               // stable id (sphere ids and cylinder ids are
                                // separate namespaces, matching the science layer)
 
+    // Sleeping: a settled dynamic body stops integrating (and acts as immovable
+    // in the solver) until disturbed. Implemented by zeroing invMass/invInertia
+    // while asleep -- the integrator and solver already treat 0 as immovable --
+    // and restoring them on wake. `dynamic` distinguishes a genuine static body
+    // (never sleeps/wakes) from a sleeping dynamic one (both have invMass 0).
+    bool dynamic = true;
+    bool sleeping = false;
+    double sleepTimer = 0.0;
+    double invMassStore = 0.0;
+    V3 invInertiaStore;
+
     bool isSphere() const { return shape == Shape::Sphere; }
 
     // World-frame inverse inertia applied to a world vector:  Iinv_world * u

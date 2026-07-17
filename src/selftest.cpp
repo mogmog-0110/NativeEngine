@@ -640,6 +640,47 @@ void test_stacking() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 20. Sleeping: a settled body sleeps and stops moving; an impulse wakes it; a
+//     falling body wakes a sleeper it lands on.
+// ---------------------------------------------------------------------------
+void test_sleeping() {
+    PhysicsWorld pw;
+    pw.setBox(1e6, false);
+    pw.setTimestep(1.0 / 240.0);
+    pw.setGravity(V3{0, -10, 0});
+    pw.setRestitution(0.0);
+    pw.setSleepEnabled(true);
+    pw.makeStatic(pw.addBox(V3{0, -1, 0}, Q{1, 0, 0, 0}, V3{20, 1, 20}, 1.0));
+    BodyId ball = pw.addSphere(V3{0, 3.0, 0}, 1.0, 1.0);
+
+    for (int s = 0; s < 2000; ++s) pw.step();   // settle + sleep
+    check(pw.isSleeping(ball), "sleeping: a settled body falls asleep");
+    V3 restPos = pw.position(ball);
+    for (int s = 0; s < 2000; ++s) pw.step();   // stays put while asleep
+    check((pw.position(ball) - restPos).norm() < 1e-6, "sleeping: an asleep body does not move");
+
+    // An impulse wakes it.
+    pw.applyImpulse(ball, V3{5, 0, 0});
+    check(!pw.isSleeping(ball), "sleeping: applyImpulse wakes the body");
+    pw.step();
+    check(pw.velocity(ball).x > 0.1, "sleeping: woken body responds to the impulse");
+
+    // A falling body wakes a sleeper it lands on.
+    PhysicsWorld pw2;
+    pw2.setBox(1e6, false); pw2.setTimestep(1.0 / 240.0);
+    pw2.setGravity(V3{0, -10, 0}); pw2.setRestitution(0.0); pw2.setSleepEnabled(true);
+    pw2.makeStatic(pw2.addBox(V3{0, -1, 0}, Q{1, 0, 0, 0}, V3{20, 1, 20}, 1.0));
+    BodyId low = pw2.addBox(V3{0, 1.0, 0}, Q{1, 0, 0, 0}, V3{1, 1, 1}, 1.0);
+    for (int s = 0; s < 2000; ++s) pw2.step();
+    check(pw2.isSleeping(low), "sleeping: the lower box sleeps");
+    BodyId drop = pw2.addBox(V3{0, 6.0, 0}, Q{1, 0, 0, 0}, V3{1, 1, 1}, 1.0);
+    (void)drop;
+    bool woke = false;
+    for (int s = 0; s < 2000; ++s) { pw2.step(); if (!pw2.isSleeping(low)) { woke = true; break; } }
+    check(woke, "sleeping: a falling box wakes the sleeper it lands on");
+}
+
 }  // namespace
 
 int runSelftest() {
@@ -663,6 +704,7 @@ int runSelftest() {
     test_physics_world();
     test_resting();
     test_stacking();
+    test_sleeping();
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

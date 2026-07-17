@@ -36,6 +36,7 @@ public:
     void setRestitution(double e) { w_.restitution = e; }
     void setFriction(double mu) { w_.friction = mu; }
     void setGravity(const V3& g) { w_.gravity = g; }
+    void setSleepEnabled(bool on) { w_.sleepEnabled = on; }
     double timestep() const { return w_.dt; }
 
     // --- body creation (returns a stable handle; kInvalidBody on failure) ---
@@ -48,10 +49,15 @@ public:
     BodyId addCylinder(const V3& pos, const Q& rot, double radius, double height, double density) {
         return add(makeCylinder(0, pos, rot, radius, height, density));
     }
-    // A static (infinite-mass) body: never integrates, collides as immovable.
+    // A static (infinite-mass) body: never integrates, never sleeps/wakes,
+    // collides as immovable.
     BodyId makeStatic(BodyId h) {
         Body* b = body(h);
-        if (b) { b->invMass = 0.0; b->invInertiaBody = {0, 0, 0}; b->v = {}; b->w = {}; }
+        if (b) {
+            b->invMass = 0.0; b->invInertiaBody = {0, 0, 0};
+            b->v = {}; b->w = {};
+            b->dynamic = false;
+        }
         return h;
     }
 
@@ -78,23 +84,26 @@ public:
 
     // --- accessors ---
     bool valid(BodyId h) const { return slot_.count(h) != 0; }
+    bool isSleeping(BodyId h) const { const Body* b = body(h); return b && b->sleeping; }
     V3 position(BodyId h) const { const Body* b = body(h); return b ? b->x : V3{}; }
     Q  orientation(BodyId h) const { const Body* b = body(h); return b ? b->q : Q{}; }
     V3 velocity(BodyId h) const { const Body* b = body(h); return b ? b->v : V3{}; }
     V3 angularVelocity(BodyId h) const { const Body* b = body(h); return b ? b->w : V3{}; }
 
-    void setPosition(BodyId h, const V3& p) { if (Body* b = body(h)) b->x = p; }
-    void setOrientation(BodyId h, const Q& q) { if (Body* b = body(h)) b->q = q; }
-    void setVelocity(BodyId h, const V3& v) { if (Body* b = body(h)) b->v = v; }
-    void setAngularVelocity(BodyId h, const V3& w) { if (Body* b = body(h)) b->w = w; }
+    // Setters wake the body: an externally-driven body must not stay frozen.
+    void setPosition(BodyId h, const V3& p) { if (Body* b = body(h)) { World::wake(*b); b->x = p; } }
+    void setOrientation(BodyId h, const Q& q) { if (Body* b = body(h)) { World::wake(*b); b->q = q; } }
+    void setVelocity(BodyId h, const V3& v) { if (Body* b = body(h)) { World::wake(*b); b->v = v; } }
+    void setAngularVelocity(BodyId h, const V3& w) { if (Body* b = body(h)) { World::wake(*b); b->w = w; } }
 
-    void applyForce(BodyId h, const V3& f) { if (Body* b = body(h)) b->force += f; }
+    void applyForce(BodyId h, const V3& f) { if (Body* b = body(h)) { World::wake(*b); b->force += f; } }
     void applyImpulse(BodyId h, const V3& imp) {
-        if (Body* b = body(h)) b->v += imp * b->invMass;
+        if (Body* b = body(h)) { World::wake(*b); b->v += imp * b->invMass; }
     }
     // Impulse at a world point (produces torque).
     void applyImpulseAt(BodyId h, const V3& imp, const V3& point) {
         if (Body* b = body(h)) {
+            World::wake(*b);
             b->v += imp * b->invMass;
             b->w += b->applyInvInertiaWorld((point - b->x).cross(imp));
         }

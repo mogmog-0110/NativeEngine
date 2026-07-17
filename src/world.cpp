@@ -36,6 +36,34 @@ void World::step() {
         wrapPositions();
     else
         applyWalls();
+    if (sleepEnabled) updateSleep();
+}
+
+void World::wake(Body& b) {
+    if (!b.sleeping) return;
+    b.invMass = b.invMassStore;
+    b.invInertiaBody = b.invInertiaStore;
+    b.sleeping = false;
+    b.sleepTimer = 0.0;
+}
+
+void World::updateSleep() {
+    for (Body& b : bodies) {
+        if (!b.dynamic || b.sleeping) continue;
+        if (b.v.norm() < sleepLinVel && b.w.norm() < sleepAngVel) {
+            b.sleepTimer += dt;
+            if (b.sleepTimer >= sleepTime) {
+                b.invMassStore = b.invMass;
+                b.invInertiaStore = b.invInertiaBody;
+                b.invMass = 0.0;
+                b.invInertiaBody = {0, 0, 0};
+                b.v = {}; b.w = {};
+                b.sleeping = true;
+            }
+        } else {
+            b.sleepTimer = 0.0;
+        }
+    }
 }
 
 void World::integrate() {
@@ -82,6 +110,14 @@ void World::collide() {
             if (a.invMass + b.invMass <= 0.0) continue;
             Contact c = detectContact(a, b, box);
             if (!c.hit) continue;
+
+            // Wake a sleeping body if a genuinely moving awake body contacts it;
+            // if both are asleep the pair is stable and needs no constraint.
+            if (sleepEnabled) {
+                if (a.sleeping && !b.sleeping && b.dynamic && b.v.norm() > wakeVel) wake(a);
+                if (b.sleeping && !a.sleeping && a.dynamic && a.v.norm() > wakeVel) wake(b);
+                if (a.sleeping && b.sleeping) continue;
+            }
 
             // Gather contact points: a multi-point clipping manifold for box-box
             // (so boxes rest flat and stack), otherwise the single narrow-phase

@@ -26,9 +26,17 @@ public:
     double contactBeta = 0.2;   // positional-correction fraction per step
     V3 gravity;                 // uniform acceleration (0 for the science runs)
 
+    // Sleeping thresholds. A dynamic body below sleepLinVel/sleepAngVel for
+    // sleepTime seconds sleeps; a contact with an awake partner faster than
+    // wakeVel wakes it. sleepEnabled=false disables the whole mechanism (the
+    // science runs keep every body awake).
+    bool sleepEnabled = false;
+    double sleepLinVel = 0.05, sleepAngVel = 0.05, sleepTime = 0.5, wakeVel = 0.5;
+
     std::vector<Body> bodies;
 
     void step();
+    static void wake(Body& b);
 
     // Aggregate diagnostics used by the physics selftest.
     V3 totalLinearMomentum() const;
@@ -38,6 +46,7 @@ public:
 private:
     void integrate();
     void collide();        // all shape pairs
+    void updateSleep();    // put settled bodies to sleep
     void applyWalls();     // reflective boundary
     void wrapPositions();  // periodic boundary
 };
