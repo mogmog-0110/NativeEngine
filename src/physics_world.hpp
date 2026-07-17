@@ -57,9 +57,30 @@ public:
         if (b) {
             b->invMass = 0.0; b->invInertiaBody = {0, 0, 0};
             b->v = {}; b->w = {};
-            b->dynamic = false;
+            b->dynamic = false; b->kinematic = false;
         }
         return h;
+    }
+    // Kinematic: infinite mass, but a real velocity that pushes dynamic bodies and
+    // advances its own pose. Drive it with setVelocity/setAngularVelocity, or with
+    // setKinematicTarget to move it to a pose over the next step (the implied
+    // velocity is what actually pushes contacts, so use this, not setPosition).
+    BodyId makeKinematic(BodyId h) {
+        Body* b = body(h);
+        if (b) {
+            b->invMass = 0.0; b->invInertiaBody = {0, 0, 0};
+            b->dynamic = false; b->kinematic = true; b->sleeping = false;
+        }
+        return h;
+    }
+    void setKinematicTarget(BodyId h, const V3& pos) {
+        if (Body* b = body(h)) b->v = (pos - b->x) * (1.0 / w_.dt);
+    }
+    void setKinematicTarget(BodyId h, const V3& pos, const Q& rot) {
+        if (Body* b = body(h)) {
+            b->v = (pos - b->x) * (1.0 / w_.dt);
+            b->w = angularVelocityBetween(b->q, rot, w_.dt);
+        }
     }
 
     void remove(BodyId h) {

@@ -889,6 +889,22 @@ void test_userdata() {
           "userData: contact reports each body's userData");
 }
 
+void test_kinematic() {
+    World w;
+    w.dt = 1.0 / 240.0; w.box.half = 100.0; w.restitution = 0.0;
+    // kinematic sphere sweeping +x into a resting dynamic sphere ahead of it.
+    Body k = makeSphere(0, V3{-2, 0, 0}, 1.0, 1.0);
+    k.invMass = 0; k.invInertiaBody = {0, 0, 0}; k.dynamic = false; k.kinematic = true;
+    k.v = V3{2, 0, 0};
+    Body d = makeSphere(1, V3{0.5, 0, 0}, 0.5, 1.0);   // dynamic, at rest, ahead
+    w.bodies = {k, d};
+    for (int s = 0; s < 240; ++s) w.step();             // 1 second
+    check(close(w.bodies[0].x.x, 0.0, 1e-6), "kinematic: pose advances by its own velocity");
+    check(close(w.bodies[0].v.x, 2.0, 1e-9), "kinematic: unaffected by the collision it causes");
+    check(w.bodies[1].v.x > 0.5, "kinematic: imparts velocity to the dynamic body");
+    check(w.bodies[1].x.x > 1.0, "kinematic: pushes the dynamic body along");
+}
+
 }  // namespace
 
 int runSelftest() {
@@ -921,6 +937,7 @@ int runSelftest() {
     test_damping();
     test_collision_layers();
     test_userdata();
+    test_kinematic();
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

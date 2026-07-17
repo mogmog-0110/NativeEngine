@@ -136,7 +136,14 @@ void World::updateSleep() {
 
 void World::integrate() {
     for (Body& b : bodies) {
-        if (b.invMass <= 0.0) {          // infinite mass: never moves
+        if (b.kinematic) {               // infinite mass, but its pose follows its
+            b.x += b.v * dt;             // own velocity (user-driven); no forces,
+            b.q = integrateOrientation(b.q, b.w, dt);   // no gravity, no impulses
+            b.force = {};
+            b.torque = {};
+            continue;
+        }
+        if (b.invMass <= 0.0) {          // static / sleeping: never moves
             b.force = {};
             b.torque = {};
             continue;
@@ -260,8 +267,8 @@ void World::collide() {
             // Wake a sleeping body if a genuinely moving awake body contacts it;
             // if both are asleep the pair is stable and needs no constraint.
             if (sleepEnabled) {
-                if (a.sleeping && !b.sleeping && b.dynamic && b.v.norm() > wakeVel) wake(a);
-                if (b.sleeping && !a.sleeping && a.dynamic && a.v.norm() > wakeVel) wake(b);
+                if (a.sleeping && !b.sleeping && (b.dynamic || b.kinematic) && b.v.norm() > wakeVel) wake(a);
+                if (b.sleeping && !a.sleeping && (a.dynamic || a.kinematic) && a.v.norm() > wakeVel) wake(b);
                 if (a.sleeping && b.sleeping) continue;
             }
 

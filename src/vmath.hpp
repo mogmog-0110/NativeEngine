@@ -85,6 +85,19 @@ inline Q integrateOrientation(const Q& q, const V3& omega, double dt) {
     return (q + dq).normalized();
 }
 
+// The world-frame angular velocity that rotates `from` to `to` over dt (inverse
+// of integrateOrientation, used to drive kinematic bodies to a target pose).
+inline V3 angularVelocityBetween(const Q& from, const Q& to, double dt) {
+    if (dt <= 0.0) return {0, 0, 0};
+    Q rel = to * from.conjugate();          // world-frame relative rotation
+    if (rel.w < 0.0) rel = rel * -1.0;      // shortest arc
+    V3 axis{rel.x, rel.y, rel.z};
+    double s = axis.norm();
+    if (s < 1e-12) return {0, 0, 0};
+    double angle = 2.0 * std::atan2(s, rel.w);
+    return axis * (angle / (s * dt));
+}
+
 }  // namespace ne
 
 #endif  // NATIVEENGINE_VMATH_HPP

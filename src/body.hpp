@@ -72,6 +72,13 @@ struct Body {
     double invMassStore = 0.0;
     V3 invInertiaStore;
 
+    // Kinematic: infinite mass (invMass=0, so the solver never pushes it) BUT a
+    // real velocity that DOES enter contact resolution, and a pose advanced from
+    // that velocity each step. This is a moving platform / elevator / animated
+    // collider: it drives dynamic bodies but is itself driven only by the user.
+    // Distinct from a static body (v=0, pose fixed) and never sleeps.
+    bool kinematic = false;
+
     bool isSphere() const { return shape == Shape::Sphere; }
 
     // Radius of a bounding sphere about the centre (for broadphase).
