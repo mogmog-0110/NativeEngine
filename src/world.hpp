@@ -24,6 +24,7 @@ public:
     double restitution = 1.0;   // e in [0,1]; 1 = perfectly elastic
     double friction = 0.0;      // Coulomb mu; 0 = frictionless
     double contactBeta = 0.2;   // positional-correction fraction per step
+    V3 gravity;                 // uniform acceleration (0 for the science runs)
 
     std::vector<Body> bodies;
 

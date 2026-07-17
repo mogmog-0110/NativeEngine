@@ -14,7 +14,8 @@ pushd "%~dp0build"
 
 cl /nologo /std:c++17 /EHsc /O2 /W4 /WX ^
    /I "%~dp0src" ^
-   "%~dp0src\world.cpp" "%~dp0src\selftest.cpp" "%~dp0src\main.cpp" ^
+   "%~dp0src\world.cpp" "%~dp0src\physics_world.cpp" ^
+   "%~dp0src\selftest.cpp" "%~dp0src\main.cpp" ^
    /Fe:NativeEngine.exe
 set RC=%ERRORLEVEL%
 

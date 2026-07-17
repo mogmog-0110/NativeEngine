@@ -22,8 +22,9 @@ void World::integrate() {
             b.torque = {};
             continue;
         }
-        // Linear: symplectic Euler.
-        b.v += b.force * (b.invMass * dt);
+        // Linear: symplectic Euler. Gravity is an acceleration (mass-independent);
+        // applied forces divide by mass.
+        b.v += (gravity + b.force * b.invMass) * dt;
         b.x += b.v * dt;
 
         // Rotational: integrate ANGULAR MOMENTUM, not angular velocity. For an

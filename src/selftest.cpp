@@ -8,6 +8,7 @@
 #include "narrowphase.hpp"
 #include "gjk.hpp"
 #include "epa.hpp"
+#include "physics_world.hpp"
 
 namespace ne {
 namespace {
@@ -518,6 +519,64 @@ void test_friction() {
     check(dpT <= 0.5 * dpN + 1e-6, "friction: stays inside the Coulomb cone");
 }
 
+// ---------------------------------------------------------------------------
+// 16. Gravity: a dynamic body accelerates at g; a static body does not.
+// ---------------------------------------------------------------------------
+void test_gravity() {
+    World w;
+    w.box.half = 1e6; w.box.periodic = false;
+    w.gravity = V3{0, -10.0, 0};
+    w.dt = 1e-3;
+    Body a = makeSphere(0, V3{0, 0, 0}, 1.0, 1.0);
+    w.bodies = {a};
+    for (int s = 0; s < 1000; ++s) w.step();          // 1 second
+    check(std::fabs(w.bodies[0].v.y - (-10.0)) < 1e-6, "gravity: v.y = -g*t after 1 s");
+    check(w.bodies[0].x.y < -4.0 && w.bodies[0].x.y > -6.0, "gravity: fell ~5 m in 1 s");
+}
+
+// ---------------------------------------------------------------------------
+// 17. Handle facade: creation, handle stability across removal, pose get/set,
+//     impulse, and the contact callback.
+// ---------------------------------------------------------------------------
+void test_physics_world() {
+    PhysicsWorld pw;
+    pw.setBox(100.0, false);
+    pw.setTimestep(1e-3);
+
+    BodyId s1 = pw.addSphere(V3{-5, 0, 0}, 1.0, 1.0);
+    BodyId s2 = pw.addSphere(V3{0, 0, 0}, 1.0, 1.0);
+    BodyId s3 = pw.addSphere(V3{5, 0, 0}, 1.0, 1.0);
+    check(s1 && s2 && s3 && s1 != s2 && s2 != s3, "facade: distinct valid handles");
+    check(pw.bodyCount() == 3, "facade: three bodies");
+
+    // Remove the middle one; the others' handles must stay valid and correct.
+    pw.remove(s2);
+    check(!pw.valid(s2) && pw.valid(s1) && pw.valid(s3), "facade: removal keeps other handles valid");
+    check(closeV(pw.position(s1), V3{-5, 0, 0}, 1e-12) &&
+              closeV(pw.position(s3), V3{5, 0, 0}, 1e-12),
+          "facade: swap-and-pop preserves poses by handle");
+    check(pw.bodyCount() == 2, "facade: two bodies after removal");
+
+    // Pose set/get + impulse.
+    pw.setPosition(s1, V3{1, 2, 3});
+    check(closeV(pw.position(s1), V3{1, 2, 3}, 1e-12), "facade: setPosition/position round-trip");
+    pw.applyImpulse(s3, V3{0, 0, 0});   // no-op sanity
+    pw.applyImpulse(s1, V3{4.18879, 0, 0});   // mass = 4/3 pi ~ 4.18879 -> v.x = 1
+    check(std::fabs(pw.velocity(s1).x - 1.0) < 1e-4, "facade: applyImpulse gives v = J/m");
+
+    // Contact callback fires for an overlapping pair.
+    PhysicsWorld cw;
+    cw.setBox(100.0, false);
+    cw.setTimestep(1e-3);
+    BodyId a = cw.addSphere(V3{-0.6, 0, 0}, 1.0, 1.0);   // overlapping (centres 1.2 < 2)
+    BodyId b = cw.addSphere(V3{ 0.6, 0, 0}, 1.0, 1.0);
+    int hits = 0; BodyId ga = 0, gb = 0;
+    cw.setContactCallback([&](const ContactInfo& ci) { ++hits; ga = ci.a; gb = ci.b; });
+    cw.step();
+    check(hits >= 1 && ((ga == a && gb == b) || (ga == b && gb == a)),
+          "facade: contact callback fires for the overlapping pair");
+}
+
 }  // namespace
 
 int runSelftest() {
@@ -537,6 +596,8 @@ int runSelftest() {
     test_cylinder_cylinder_dynamics();
     test_box();
     test_friction();
+    test_gravity();
+    test_physics_world();
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
