@@ -3,3 +3,4 @@ build/
 *.obj
 *.pdb
 *.ilk
+NativeEngine/demos_out/*.pxrf

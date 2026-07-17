@@ -315,24 +315,31 @@ void World::collide() {
         correctPenetration(bodies[k.i], bodies[k.j], k.n, k.overlap, contactBeta);
 }
 
-// Reflective walls at +-half. A sphere whose surface crosses a wall has that
-// velocity component reflected (scaled by restitution) and its position projected
-// back inside. Energy-conserving at e = 1.
+// Reflective walls at +-half, shape-aware for ALL shapes (a sphere-only version
+// let cylinders and boxes fall straight through). The body's furthest point
+// toward each wall is its support point; if that point crosses the wall the
+// centre is projected back so the support just touches, and the outward velocity
+// component is reflected (scaled by restitution). Center-based reflection: no
+// wall torque, but no escape and correct extent per shape.
 void World::applyWalls() {
     const double h = box.half;
     for (Body& b : bodies) {
-        if (b.invMass <= 0.0 || !b.isSphere()) continue;
-        double r = b.radius;
+        if (b.invMass <= 0.0) continue;
         double* px[3] = {&b.x.x, &b.x.y, &b.x.z};
         double* pv[3] = {&b.v.x, &b.v.y, &b.v.z};
-        for (int k = 0; k < 3; ++k) {
-            double lim = h - r;
-            if (*px[k] > lim) {
-                *px[k] = 2.0 * lim - *px[k];
-                if (*pv[k] > 0) *pv[k] = -restitution * *pv[k];
-            } else if (*px[k] < -lim) {
-                *px[k] = -2.0 * lim - *px[k];
-                if (*pv[k] < 0) *pv[k] = -restitution * *pv[k];
+        for (int axis = 0; axis < 3; ++axis) {
+            for (int sgn = -1; sgn <= 1; sgn += 2) {
+                V3 outward{axis == 0 ? double(sgn) : 0.0,
+                           axis == 1 ? double(sgn) : 0.0,
+                           axis == 2 ? double(sgn) : 0.0};
+                V3 sp = supportWorld(b, outward);
+                double coord = (axis == 0 ? sp.x : axis == 1 ? sp.y : sp.z) * sgn;
+                double pen = coord - h;
+                if (pen > 0.0) {
+                    *px[axis] -= double(sgn) * pen;                 // support -> on the wall
+                    if (*pv[axis] * sgn > 0.0)                      // moving into the wall
+                        *pv[axis] = -restitution * *pv[axis];
+                }
             }
         }
     }
