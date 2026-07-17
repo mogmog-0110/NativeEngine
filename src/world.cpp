@@ -43,6 +43,61 @@ double combineMat(World::Combine m, double a, double b) {
     }
     return 0.5 * (a + b);
 }
+
+// Contacts between `other` (any non-mesh body) and a static triangle mesh, one
+// per overlapping triangle. Each triangle is treated as a thin prism (a valid 3D
+// convex) so the existing GJK/EPA path is robust; normals point mesh -> other.
+void meshContacts(const Body& other, const Body& meshBody, const Box& box,
+                  std::vector<Contact>& out) {
+    if (!meshBody.mesh) return;
+    const MeshData& md = *meshBody.mesh;
+    V3 rel = box.minImage(other.x - meshBody.x);
+    V3 cLocal = meshBody.q.inverseRotate(rel);
+    double rr = other.boundingRadius() + 0.05;
+    std::vector<int> tris;
+    md.query(cLocal - V3{rr, rr, rr}, cLocal + V3{rr, rr, rr}, tris);
+    const double thick = 1e-3;
+    Body tri;                                  // reused temp convex (thin prism)
+    tri.shape = Shape::Convex; tri.dynamic = false;
+    tri.invMass = 0.0; tri.invInertiaBody = {0, 0, 0};
+    tri.vertices.resize(6);
+    for (int ti : tris) {
+        V3 w0 = meshBody.x + meshBody.q.rotate(md.v(ti, 0));
+        V3 w1 = meshBody.x + meshBody.q.rotate(md.v(ti, 1));
+        V3 w2 = meshBody.x + meshBody.q.rotate(md.v(ti, 2));
+        V3 n = (w1 - w0).cross(w2 - w0);
+        double nl = n.norm();
+        if (nl < 1e-12) continue;              // degenerate triangle
+        n = n / nl;
+        tri.vertices[0] = w0 + n * thick; tri.vertices[1] = w1 + n * thick; tri.vertices[2] = w2 + n * thick;
+        tri.vertices[3] = w0 - n * thick; tri.vertices[4] = w1 - n * thick; tri.vertices[5] = w2 - n * thick;
+        Contact c = detectContact(other, tri, box);   // normal tri(=mesh) -> other
+        if (c.hit) out.push_back(c);
+    }
+}
+
+// All contacts for a pair, normal always pointing b -> a. Box-box uses a clipping
+// manifold; a mesh expands into per-triangle contacts; everything else is one
+// narrow-phase point.
+void gatherContacts(const Body& a, const Body& b, const Box& box, std::vector<Contact>& out) {
+    if (b.shape == Shape::Mesh) {
+        meshContacts(a, b, box, out);                  // normal mesh(b) -> a  == b -> a
+        return;
+    }
+    if (a.shape == Shape::Mesh) {
+        meshContacts(b, a, box, out);                  // normal mesh(a) -> b
+        for (Contact& c : out) c.normal = -c.normal;   // -> b -> a
+        return;
+    }
+    Contact c = detectContact(a, b, box);
+    if (!c.hit) return;
+    if (a.shape == Shape::Box && b.shape == Shape::Box) {
+        Manifold mf = boxBoxManifold(a, b, c.normal, box);
+        for (int p = 0; p < mf.count; ++p) out.push_back({true, c.normal, mf.point[p], mf.depth[p]});
+        if (mf.count > 0) return;
+    }
+    out.push_back(c);
+}
 }  // namespace
 
 void World::step() {
@@ -313,7 +368,7 @@ std::vector<std::pair<std::size_t, std::size_t>> World::broadphasePairs() const 
     double maxR = 0.0;
     bool anyPlane = false;
     for (const Body& b : bodies) {
-        if (b.shape == Shape::Plane) { anyPlane = true; continue; }   // infinite: not gridded
+        if (b.gridExcluded()) { anyPlane = true; continue; }        // infinite/large: not gridded
         maxR = std::max(maxR, b.boundingRadius());
     }
     const double cell = 2.0 * maxR;
@@ -328,7 +383,7 @@ std::vector<std::pair<std::size_t, std::size_t>> World::broadphasePairs() const 
     auto appendPlanePairs = [&]() {
         if (!anyPlane) return;
         for (size_t p = 0; p < n; ++p) {
-            if (bodies[p].shape != Shape::Plane) continue;
+            if (!bodies[p].gridExcluded()) continue;
             for (size_t j = 0; j < n; ++j)
                 if (j != p) pairs.push_back({std::min(p, j), std::max(p, j)});
         }
@@ -358,12 +413,12 @@ std::vector<std::pair<std::size_t, std::size_t>> World::broadphasePairs() const 
     std::unordered_map<std::uint64_t, std::vector<size_t>> grid;
     grid.reserve(n * 2);
     for (size_t i = 0; i < n; ++i) {
-        if (bodies[i].shape == Shape::Plane) continue;
+        if (bodies[i].gridExcluded()) continue;
         long cx = cellOf(bodies[i].x, 0), cy = cellOf(bodies[i].x, 1), cz = cellOf(bodies[i].x, 2);
         grid[key(cx, cy, cz)].push_back(i);
     }
     for (size_t i = 0; i < n; ++i) {
-        if (bodies[i].shape == Shape::Plane) continue;
+        if (bodies[i].gridExcluded()) continue;
         long cx = cellOf(bodies[i].x, 0), cy = cellOf(bodies[i].x, 1), cz = cellOf(bodies[i].x, 2);
         for (int dx = -1; dx <= 1; ++dx)
             for (int dy = -1; dy <= 1; ++dy)
@@ -398,8 +453,10 @@ void World::collide() {
             if (a.invMass + b.invMass <= 0.0) continue;
             if (!layersCollide(a, b)) continue;         // collision filtering
             if (a.sensor || b.sensor) continue;         // triggers: no physical response
-            Contact c = detectContact(a, b, box);
-            if (!c.hit) continue;
+
+            std::vector<Contact> contacts;
+            gatherContacts(a, b, box, contacts);        // each normal points b -> a
+            if (contacts.empty()) continue;
 
             const double e = combineMat(restitutionCombine, effRestitution(a), effRestitution(b));
             const double mu = combineMat(frictionCombine, effFriction(a), effFriction(b));
@@ -412,27 +469,16 @@ void World::collide() {
                 if (a.sleeping && b.sleeping) continue;
             }
 
-            // Gather contact points: a multi-point clipping manifold for box-box
-            // (so boxes rest flat and stack), otherwise the single narrow-phase
-            // point. Each point becomes its own constraint sharing the normal.
-            V3 pts[4]; double deps[4]; int npts = 0;
-            if (a.shape == Shape::Box && b.shape == Shape::Box) {
-                Manifold mf = boxBoxManifold(a, b, c.normal, box);
-                for (int p = 0; p < mf.count; ++p) { pts[p] = mf.point[p]; deps[p] = mf.depth[p]; }
-                npts = mf.count;
-            }
-            if (npts == 0) { pts[0] = c.point; deps[0] = c.overlap; npts = 1; }
-
-            for (int p = 0; p < npts; ++p) {
+            for (const Contact& c : contacts) {
                 Constraint k;
-                k.i = i; k.j = j; k.n = c.normal; k.overlap = deps[p]; k.mu = mu;
-                k.rA = box.minImage(pts[p] - a.x);
-                k.rB = box.minImage(pts[p] - b.x);
+                k.i = i; k.j = j; k.n = c.normal; k.overlap = c.overlap; k.mu = mu;
+                k.rA = box.minImage(c.point - a.x);
+                k.rB = box.minImage(c.point - b.x);
                 V3 vc = (a.v + a.w.cross(k.rA)) - (b.v + b.w.cross(k.rB));
                 double vn = vc.dot(k.n);
                 k.restBias = (vn < -kRestitutionSlop) ? -e * vn : 0.0;
                 cons.push_back(k);
-                if (captureContacts) debugContacts.push_back({pts[p], c.normal, deps[p], i, j});
+                if (captureContacts) debugContacts.push_back({c.point, c.normal, c.overlap, i, j});
             }
         }
     }

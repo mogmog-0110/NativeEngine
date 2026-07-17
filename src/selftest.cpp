@@ -1218,6 +1218,34 @@ void test_integration_api() {
     }
 }
 
+void test_mesh() {
+    PhysicsWorld pw;
+    pw.setBox(1000.0, false); pw.setTimestep(1.0 / 240.0); pw.setGravity(V3{0, -10, 0});
+    pw.setRestitution(0.0); pw.setFriction(0.5);
+    // a 20x20 floor quad (two triangles) at y = 0
+    std::vector<V3> v = {{-10, 0, -10}, {10, 0, -10}, {10, 0, 10}, {-10, 0, 10}};
+    std::vector<int> idx = {0, 1, 2, 0, 2, 3};
+    pw.addMesh(V3{0, 0, 0}, Q{1, 0, 0, 0}, v, idx);
+    BodyId ball = pw.addSphere(V3{1, 5, 1}, 0.5, 1.0);
+    BodyId bx = pw.addBox(V3{-3, 5, -2}, Q{1, 0, 0, 0}, V3{0.5, 0.5, 0.5}, 1.0);
+    for (int s = 0; s < 1500; ++s) pw.step();
+    check(close(pw.position(ball).y, 0.5, 0.05), "mesh: sphere rests on the mesh floor");
+    check(pw.velocity(ball).norm() < 0.15, "mesh: sphere comes to rest");
+    check(close(pw.position(bx).y, 0.5, 0.08), "mesh: box rests on the mesh floor");
+
+    // heightfield: a flat 5x5 terrain; a sphere rests on it.
+    {
+        PhysicsWorld hw;
+        hw.setBox(1000.0, false); hw.setTimestep(1.0 / 240.0); hw.setGravity(V3{0, -10, 0});
+        hw.setRestitution(0.0); hw.setFriction(0.5);
+        std::vector<double> h(25, 0.0);
+        hw.addHeightfield(V3{-4, 0, -4}, 2.0, 5, 5, h);
+        BodyId s = hw.addSphere(V3{0, 5, 0}, 0.5, 1.0);
+        for (int st = 0; st < 1500; ++st) hw.step();
+        check(close(hw.position(s).y, 0.5, 0.06), "heightfield: sphere rests on the terrain");
+    }
+}
+
 }  // namespace
 
 int runSelftest() {
@@ -1260,6 +1288,7 @@ int runSelftest() {
     test_character();
     test_ccd();
     test_integration_api();
+    test_mesh();
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

@@ -72,6 +72,33 @@ public:
     BodyId addPlane(const V3& point, const V3& normal) {
         return add(makePlane(0, point, normal));
     }
+    // A static triangle mesh (level geometry): `verts` + flat `indices` (triples).
+    // Builds the BVH once here.
+    BodyId addMesh(const V3& pos, const Q& rot, const std::vector<V3>& verts,
+                   const std::vector<int>& indices) {
+        auto md = std::make_shared<MeshData>();
+        md->verts = verts;
+        for (std::size_t i = 0; i + 2 < indices.size(); i += 3)
+            md->tris.push_back({indices[i], indices[i + 1], indices[i + 2]});
+        md->build();
+        return add(makeMesh(0, pos, rot, md));
+    }
+    // A heightfield (terrain): a rows x cols grid of heights, spacing `spacing` in
+    // x/z, triangulated into a static mesh. heights is row-major [r*cols + c].
+    BodyId addHeightfield(const V3& origin, double spacing, int rows, int cols,
+                          const std::vector<double>& heights) {
+        std::vector<V3> verts; verts.reserve((std::size_t)rows * cols);
+        for (int r = 0; r < rows; ++r)
+            for (int c = 0; c < cols; ++c)
+                verts.push_back(origin + V3{c * spacing, heights[(std::size_t)r * cols + c], r * spacing});
+        std::vector<int> idx;
+        for (int r = 0; r + 1 < rows; ++r)
+            for (int c = 0; c + 1 < cols; ++c) {
+                int i00 = r * cols + c, i01 = i00 + 1, i10 = i00 + cols, i11 = i10 + 1;
+                idx.insert(idx.end(), {i00, i10, i11, i00, i11, i01});
+            }
+        return addMesh(V3{0, 0, 0}, Q{1, 0, 0, 0}, verts, idx);
+    }
     // A static (infinite-mass) body: never integrates, never sleeps/wakes,
     // collides as immovable.
     BodyId makeStatic(BodyId h) {

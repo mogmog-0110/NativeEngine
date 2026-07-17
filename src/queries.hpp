@@ -60,6 +60,9 @@ inline bool rayVsBoxLocal(const V3& ol, const V3& dl, const V3& he, double maxT,
 // Ray vs any body. Sphere/box/cylinder/capsule handled analytically.
 inline bool rayVsBody(const Body& b, const V3& c, const V3& o, const V3& d,
                       double maxT, double& tOut, V3& pOut, V3& nOut) {
+    // Convex/plane/mesh ray tests are not yet implemented; skip rather than
+    // misinterpret their parameters as a cylinder.
+    if (b.shape == Shape::Convex || b.shape == Shape::Plane || b.shape == Shape::Mesh) return false;
     if (b.shape == Shape::Sphere) {
         if (!rayVsSphereAt(o, d, c, b.radius, maxT, tOut, nOut)) return false;
         pOut = o + d * tOut; return true;

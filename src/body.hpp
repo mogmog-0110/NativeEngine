@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
+#include "mesh.hpp"
 #include "vmath.hpp"
 
 namespace ne {
@@ -17,7 +19,8 @@ namespace ne {
 //   Convex : an arbitrary convex hull given by `vertices` (body frame).
 //   Plane  : an infinite static half-space; `halfExtents` holds the world normal
 //            and the plane passes through `x`.
-enum class Shape { Sphere, Cylinder, Box, Capsule, Convex, Plane };
+//   Mesh   : a static triangle mesh (`mesh`, a shared BVH); body transform places it.
+enum class Shape { Sphere, Cylinder, Box, Capsule, Convex, Plane, Mesh };
 
 struct Body {
     // State
@@ -40,6 +43,7 @@ struct Body {
     double halfHeight = 0.0;   // cylinder/capsule half-height (0 for sphere)
     V3 halfExtents;            // box half-extents (Box); world normal (Plane)
     std::vector<V3> vertices;  // convex-hull vertices, body frame (Convex only)
+    std::shared_ptr<const MeshData> mesh;   // triangle mesh + BVH (Mesh only)
 
     int id = -1;               // stable id (sphere ids and cylinder ids are
                                // separate namespaces, matching the science layer)
@@ -101,13 +105,16 @@ struct Body {
     Q prevQ{1, 0, 0, 0};   // pre-step orientation, for render interpolation
 
     bool isSphere() const { return shape == Shape::Sphere; }
+    // Infinite / large static shapes that can't be placed in the uniform grid; the
+    // broadphase pairs them against every body and lets the narrow phase cull.
+    bool gridExcluded() const { return shape == Shape::Plane || shape == Shape::Mesh; }
 
     // Radius of a bounding sphere about the centre (for broadphase).
     double boundingRadius() const {
         if (shape == Shape::Sphere) return radius;
         if (shape == Shape::Box) return halfExtents.norm();
         if (shape == Shape::Capsule) return halfHeight + radius;   // segment + cap
-        if (shape == Shape::Plane) return 1e30;                    // infinite (grid-excluded)
+        if (shape == Shape::Plane || shape == Shape::Mesh) return 1e30;   // large (grid-excluded)
         if (shape == Shape::Convex) {
             double m = 0.0;
             for (const V3& vert : vertices) m = std::max(m, vert.norm());
@@ -270,6 +277,22 @@ inline Body makeConvex(int id, const V3& x, const Q& q, std::vector<V3> verts,
     double Iy = (1.0 / 3.0) * m * (hx * hx + hz * hz);
     double Iz = (1.0 / 3.0) * m * (hx * hx + hy * hy);
     b.invInertiaBody = {Ix > 0 ? 1.0 / Ix : 0.0, Iy > 0 ? 1.0 / Iy : 0.0, Iz > 0 ? 1.0 / Iz : 0.0};
+    return b;
+}
+
+// Factory: a static triangle mesh (level geometry). `data` is a shared, pre-built
+// MeshData (call data->build() first). The body transform (point, q) places it.
+inline Body makeMesh(int id, const V3& point, const Q& q,
+                     std::shared_ptr<const MeshData> data) {
+    Body b;
+    b.shape = Shape::Mesh;
+    b.id = id;
+    b.x = point;
+    b.q = q;
+    b.mesh = std::move(data);
+    b.invMass = 0.0;
+    b.invInertiaBody = {0, 0, 0};
+    b.dynamic = false;
     return b;
 }
 
