@@ -27,54 +27,48 @@ Two things here are genuinely ahead of MitiruEngine's own backends: **native PBC
 (unique) and **determinism + sleeping** (the Jolt wrapper barely exposes sleep).
 Keep both as invariants when adding the features below.
 
-## Gaps, by tier (→ task IDs)
+## Gaps, by tier — ALL DONE ✅ (164 selftests, 5 binding tests)
 
-### Tier 1 — game table stakes (MitiruEngine's schema/components require these)
-The `PhysicsTrait`/`RigidBodyComponent` fields that today have no runtime effect:
-- ~~**Per-body material** friction/restitution + combine modes~~ ✅ done (#20)
-- ~~**Linear/angular damping** per body~~ ✅ done (#21)
-- ~~**Collision layers + masks**~~ ✅ done (#23)
-- ~~**Body userData** (body → ECS entity)~~ ✅ done (#24)
-- **Kinematic bodies** (script-driven, infinite mass, imparts velocity) — only
-  static/dynamic exist → **#22**
-- **Triggers/sensors** + enter/stay/exit — `isTrigger` has no real semantics → **#25**
-- **Contact events begin/stay/end** — callback is per-frame, no transitions → **#26**
+### Tier 1 — game table stakes ✅
+- ✅ Per-body material friction/restitution + combine modes (#20)
+- ✅ Linear/angular damping (#21)
+- ✅ Collision layers + masks (#23)
+- ✅ Body userData → ECS entity (#24)
+- ✅ Kinematic bodies (script-driven, imparts velocity) (#22)
+- ✅ Triggers/sensors + enter/stay/exit (#25)
+- ✅ Contact events begin/stay/end (#26)
 
-### Tier 2 — characters & queries
-- **Capsule shape** — the character/prop shape; in schema + both components → **#27**
-- **Scene queries** raycast / overlap / shapecast — gameplay staple; only a
-  viewer-side ray-vs-sphere exists → **#28**
+### Tier 2 — characters & queries ✅
+- ✅ Capsule shape (#27)
+- ✅ Scene queries: raycast / overlap / sphere-cast (#28)
 
-### Tier 3 — world geometry & articulation
-- **Static triangle mesh + heightfield** (level/terrain collision) + BVH midphase
-  — the biggest hole for real levels → **#29**
-- **Convex hull + compound + plane** shapes → **#30**
-- **Joints** hinge / ball-socket / fixed / slider (+ limits, motors, breakable) —
-  only distance exists → **#31**
+### Tier 3 — world geometry & articulation ✅
+- ✅ Static triangle mesh + heightfield + BVH midphase (#29)
+- ✅ Convex hull + plane (#30); compound (#36)
+- ✅ Joints: ball / hinge / fixed / slider (+ limits, motors, breakable) (#31)
 
-### Tier 4 — advanced motion
-- **Kinematic character controller** (capsule, slopes, step-up, collide-and-slide)
-  — absent everywhere; needs capsule + shapecast → **#32**
-- **Continuous collision detection** for fast bodies (no tunneling) → **#33**
+### Tier 4 — advanced motion ✅
+- ✅ Kinematic capsule character controller (collide-and-slide, grounded, slopes) (#32)
+- ✅ Continuous collision detection (#33)
 
-### Tier 5 — MitiruEngine integration polish
-- **Debug-draw hook** feeding MitiruEngine's renderer (DebugDrawFlags) instead of
-  only the standalone viewer; **render interpolation** (prev/curr + factor);
-  **per-body gravity factor**; round out the force API (torque, force-at-point) → **#34**
+### Tier 5 — MitiruEngine integration ✅
+- ✅ Debug-draw hook (DebugDrawFlags), render interpolation, per-body gravity,
+  full force API (torque, force-at-point, angular impulse) (#34)
 
-### Tier 6 — solver robustness & scale (keep determinism as default)
-- **Warm-started persistent manifolds** (stable stacks, fewer iterations),
-  **simulation islands**, **world snapshot serialization**; optional
-  deterministic-order parallel solver later → **#35**
+### Tier 6 — solver robustness & scale ✅
+- ✅ Warm-started contacts, island sleeping, snapshot save/load (#35)
 
-## Suggested order
+## Remaining / future (small, non-blocking)
 
-Tier 1 is a cohesive low-risk batch (all Body + facade changes, no new
-narrow-phase) that immediately makes the `PhysicsTrait` schema real — do it first.
-Then capsule (#27) + queries (#28) unlock the character controller (#32). Mesh
-colliders (#29) unlock real levels. Joints (#31) unlock ragdolls/vehicles. Tiers
-5–6 are integration and scale, valuable once the feature surface is complete.
+- ray-vs-mesh / ray-vs-convex / ray-vs-plane (queries currently skip these shapes)
+- exact convex & compound inertia (currently AABB / parallel-axis-diagonal
+  approximations — fine for gameplay, off for very asymmetric bodies)
+- box-box-style multi-point manifolds for capsule/convex/mesh resting contacts
+  (single-point today; stable via warm starting but not as rigid as a manifold)
+- optional deterministic-order multithreaded solver (single-thread is the
+  deterministic default)
 
-Not on the critical path but worth stating: MitiruEngine currently wires **no**
-physics into a shipping game (usage is unit tests + the un-wired Jolt submodule),
-so this backend can define the API rather than chase call sites.
+The engine now covers the full game-physics feature surface — shapes, queries,
+joints, character controller, CCD, events, filtering, materials, debug draw,
+interpolation, and snapshotting — while keeping its two differentiators (native
+PBC, determinism) intact.

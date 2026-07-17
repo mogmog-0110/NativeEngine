@@ -93,7 +93,20 @@ pick. Everything is also on the UI panels.
 
 ## Status
 
-Game-physics core + MitiruEngine binding + live visual debugger: complete and
-tested. The macrocycle science use (reproduce the PhysX reflective results, then
-run the native-PBC experiment) lives in the consuming project as a bridge, and
-reuses the bonding joints and science layer.
+Full game-physics feature surface, complete and tested (164 selftests + 5 binding
+tests + a live visual debugger). See `ROADMAP.md` for the tiered breakdown.
+
+- **Shapes:** sphere, box, cylinder, capsule, convex hull, plane, static triangle
+  mesh + heightfield (BVH), compound.
+- **Bodies:** dynamic / static / kinematic; per-body material, damping, gravity
+  scale, layers+masks, userData, sleeping (island-based), CCD.
+- **Queries:** raycast, overlap, sphere-cast.
+- **Joints:** distance, ball, hinge, fixed, slider (+ limits, motors, breakable).
+- **Gameplay:** trigger/sensor + contact events (enter/stay/exit, begin/stay/end),
+  a kinematic capsule character controller.
+- **Integration:** debug-draw hook, render interpolation, snapshot save/load,
+  full force API; MitiruEngine `sgc` binding.
+- **Differentiators kept intact:** native periodic boundaries, bit-for-bit determinism.
+
+The macrocycle science use (reproduce the PhysX reflective results, then run the
+native-PBC experiment) lives in the consuming project as a bridge.
