@@ -52,6 +52,9 @@ public:
     BodyId addCylinder(const V3& pos, const Q& rot, double radius, double height, double density) {
         return add(makeCylinder(0, pos, rot, radius, height, density));
     }
+    BodyId addCapsule(const V3& pos, const Q& rot, double radius, double halfHeight, double density) {
+        return add(makeCapsule(0, pos, rot, radius, halfHeight, density));
+    }
     // A static (infinite-mass) body: never integrates, never sleeps/wakes,
     // collides as immovable.
     BodyId makeStatic(BodyId h) {

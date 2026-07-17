@@ -80,6 +80,80 @@ inline Contact sphereVsCylinder(const Body& sph, const Body& cyl, const Box& box
     return c;
 }
 
+// --- capsule helpers --------------------------------------------------------
+// A capsule is a segment (endpoints c.x +- halfHeight * axis) swept by a sphere
+// of `radius`. Contacts reduce to the closest point(s) between the segment(s).
+inline double npClamp(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+inline V3 closestOnSegment(const V3& p, const V3& a, const V3& b) {
+    V3 ab = b - a;
+    double L2 = ab.norm2();
+    if (L2 < 1e-18) return a;
+    return a + ab * npClamp((p - a).dot(ab) / L2, 0.0, 1.0);
+}
+
+// Closest points c1 (on p1q1) and c2 (on p2q2) between two segments (Ericson).
+inline void closestSegSeg(const V3& p1, const V3& q1, const V3& p2, const V3& q2,
+                          V3& c1, V3& c2) {
+    V3 d1 = q1 - p1, d2 = q2 - p2, r = p1 - p2;
+    double a = d1.dot(d1), e = d2.dot(d2), f = d2.dot(r);
+    const double EPS = 1e-12;
+    double s, t;
+    if (a <= EPS && e <= EPS) { s = t = 0.0; }
+    else if (a <= EPS) { s = 0.0; t = npClamp(f / e, 0.0, 1.0); }
+    else {
+        double c = d1.dot(r);
+        if (e <= EPS) { t = 0.0; s = npClamp(-c / a, 0.0, 1.0); }
+        else {
+            double b = d1.dot(d2), denom = a * e - b * b;
+            s = denom > EPS ? npClamp((b * f - c * e) / denom, 0.0, 1.0) : 0.0;
+            t = (b * s + f) / e;
+            if (t < 0.0) { t = 0.0; s = npClamp(-c / a, 0.0, 1.0); }
+            else if (t > 1.0) { t = 1.0; s = npClamp((b - c) / a, 0.0, 1.0); }
+        }
+    }
+    c1 = p1 + d1 * s; c2 = p2 + d2 * t;
+}
+
+// Capsule (A) vs sphere (B). normal points from B toward A (detect convention),
+// point is on the capsule surface.
+inline Contact capsuleVsSphere(const Body& cap, const Body& sph, const Box& box) {
+    Contact c;
+    V3 sc = cap.x + box.minImage(sph.x - cap.x);          // sphere centre, capsule's image
+    V3 axis = cap.q.rotate(V3{0, 1, 0});
+    V3 cp = closestOnSegment(sc, cap.x - axis * cap.halfHeight, cap.x + axis * cap.halfHeight);
+    V3 e = sc - cp;                                        // capsule -> sphere
+    double dist = e.norm();
+    double sumR = cap.radius + sph.radius;
+    if (dist >= sumR) return c;
+    V3 nrm = (dist > 1e-12) ? e / dist : V3{0, 1, 0};      // capsule -> sphere
+    c.hit = true;
+    c.overlap = sumR - dist;
+    c.normal = -nrm;                                       // sphere -> capsule (B -> A)
+    c.point = cp + nrm * cap.radius;                       // on the capsule surface
+    return c;
+}
+
+// Capsule (A) vs capsule (B). normal from B toward A, point on A's surface.
+inline Contact capsuleVsCapsule(const Body& A, const Body& B, const Box& box) {
+    Contact c;
+    V3 axA = A.q.rotate(V3{0, 1, 0}), axB = B.q.rotate(V3{0, 1, 0});
+    V3 bc = A.x + box.minImage(B.x - A.x);                 // B centre, A's image
+    V3 pA, pB;
+    closestSegSeg(A.x - axA * A.halfHeight, A.x + axA * A.halfHeight,
+                  bc - axB * B.halfHeight, bc + axB * B.halfHeight, pA, pB);
+    V3 e = pB - pA;                                        // A -> B
+    double dist = e.norm();
+    double sumR = A.radius + B.radius;
+    if (dist >= sumR) return c;
+    V3 nrm = (dist > 1e-12) ? e / dist : V3{0, 1, 0};      // A -> B
+    c.hit = true;
+    c.overlap = sumR - dist;
+    c.normal = -nrm;                                       // B -> A
+    c.point = pA + nrm * A.radius;                         // on A's surface
+    return c;
+}
+
 }  // namespace ne
 
 #endif  // NATIVEENGINE_NARROWPHASE_HPP

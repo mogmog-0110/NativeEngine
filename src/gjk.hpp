@@ -23,6 +23,11 @@ inline V3 supportWorld(const Body& b, const V3& d) {
         sb = V3{(db.x >= 0 ? b.halfExtents.x : -b.halfExtents.x),
                 (db.y >= 0 ? b.halfExtents.y : -b.halfExtents.y),
                 (db.z >= 0 ? b.halfExtents.z : -b.halfExtents.z)};
+    } else if (b.shape == Shape::Capsule) {
+        // Segment along body +Y (farther endpoint), plus radius along d: a
+        // capsule is the Minkowski sum of a segment and a sphere.
+        double sy = (db.y >= 0.0) ? b.halfHeight : -b.halfHeight;
+        sb = V3{0.0, sy, 0.0} + db.normalized() * b.radius;
     } else {
         // Cylinder: axis along body +Y. Farther cap plane along y, rim radially.
         double sy = (db.y >= 0.0) ? b.halfHeight : -b.halfHeight;

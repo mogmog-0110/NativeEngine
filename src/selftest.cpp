@@ -958,6 +958,51 @@ void test_triggers() {
     check(pw.position(ball).x > 1.5, "trigger: ball continued past the sensor");
 }
 
+void test_capsule() {
+    // (a) capsule-sphere: a sphere resting on the cylindrical flank of a
+    //     horizontal capsule ends up ~ (capR + sphR) above the axis.
+    {
+        World w;
+        w.dt = 1.0 / 240.0; w.box.half = 100.0; w.gravity = {0, -10, 0};
+        w.restitution = 0.0; w.friction = 0.5;
+        // capsule lying along X (rotate body +Y to world +X: 90 deg about Z)
+        double s = std::sin(PI / 4), cth = std::cos(PI / 4);
+        Body cap = makeCapsule(0, V3{0, 0, 0}, Q{cth, 0, 0, s}, 0.5, 1.5, 1.0);
+        cap.invMass = 0; cap.invInertiaBody = {0, 0, 0}; cap.dynamic = false;
+        Body ball = makeSphere(1, V3{0, 3, 0}, 0.5, 1.0);
+        w.bodies = {cap, ball};
+        for (int st = 0; st < 1500; ++st) w.step();
+        check(close(w.bodies[1].x.y, 1.0, 0.05), "capsule: sphere rests on the flank at capR+sphR");
+        check(std::fabs(w.bodies[1].x.x) < 0.6 && std::fabs(w.bodies[1].x.z) < 0.6,
+              "capsule: sphere stays over the capsule");
+    }
+    // (b) capsule-capsule: two crossed capsules resolve to a real separation.
+    {
+        World w;
+        w.dt = 1.0 / 240.0; w.box.half = 100.0; w.restitution = 0.0;
+        double s = std::sin(PI / 4), cth = std::cos(PI / 4);
+        Body A = makeCapsule(0, V3{0, 0, 0}, Q{cth, 0, 0, s}, 0.5, 2.0, 1.0);   // along X
+        Body B = makeCapsule(1, V3{0, 0.6, 0}, Q{cth, s, 0, 0}, 0.5, 2.0, 1.0); // along Z, overlapping
+        w.bodies = {A, B};
+        double gap0 = w.bodies[1].x.y - w.bodies[0].x.y;
+        for (int st = 0; st < 600; ++st) w.step();
+        double gap1 = w.bodies[1].x.y - w.bodies[0].x.y;
+        check(gap1 > gap0 + 0.2 && gap1 > 0.9, "capsule: crossed capsules push apart to ~2r");
+    }
+    // (c) capsule vs box through GJK/EPA (the capsule support function): a
+    //     vertical capsule overlapping a static box is pushed out to touching.
+    {
+        World w;
+        w.dt = 1.0 / 240.0; w.box.half = 100.0; w.restitution = 0.0;
+        Body bx = makeBox(0, V3{0, 0, 0}, Q{1, 0, 0, 0}, V3{1, 1, 1}, 1.0);
+        bx.invMass = 0; bx.invInertiaBody = {0, 0, 0}; bx.dynamic = false;
+        Body cap = makeCapsule(1, V3{0, 1.2, 0}, Q{1, 0, 0, 0}, 0.5, 1.0, 1.0);  // vertical, overlapping
+        w.bodies = {bx, cap};
+        for (int st = 0; st < 500; ++st) w.step();
+        check(w.bodies[1].x.y > 2.0, "capsule vs box: EPA pushes the capsule out to touching");
+    }
+}
+
 }  // namespace
 
 int runSelftest() {
@@ -993,6 +1038,7 @@ int runSelftest() {
     test_kinematic();
     test_contact_events();
     test_triggers();
+    test_capsule();
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

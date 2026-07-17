@@ -34,6 +34,19 @@ inline Contact detectContact(const Body& a, const Body& b, const Box& box) {
         if (t.hit) t.normal = -t.normal;                            // -> b->a
         return t;
     }
+
+    // Capsule analytic paths (smooth shape -> cleaner than EPA). capsule-box and
+    // capsule-cylinder fall through to GJK/EPA via the capsule support function.
+    const bool aCap = a.shape == Shape::Capsule;
+    const bool bCap = b.shape == Shape::Capsule;
+    if (aCap && bCap) return capsuleVsCapsule(a, b, box);           // normal b->a
+    if (aCap && b.isSphere()) return capsuleVsSphere(a, b, box);    // A=cap, normal b->a
+    if (a.isSphere() && bCap) {
+        Contact t = capsuleVsSphere(b, a, box);                     // normal sph->cap
+        if (t.hit) t.normal = -t.normal;                            // -> b->a
+        return t;
+    }
+
     return convexContact(a, b, box);          // normal b->a
 }
 

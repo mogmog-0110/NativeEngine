@@ -12,7 +12,7 @@ namespace ne {
 // the parameters the narrow phase needs. Inertia is stored as the DIAGONAL of
 // the inverse body-frame inertia tensor, valid because both shapes are integrated
 // about their principal axes.
-enum class Shape { Sphere, Cylinder, Box };
+enum class Shape { Sphere, Cylinder, Box, Capsule };
 
 struct Body {
     // State
@@ -89,6 +89,7 @@ struct Body {
     double boundingRadius() const {
         if (shape == Shape::Sphere) return radius;
         if (shape == Shape::Box) return halfExtents.norm();
+        if (shape == Shape::Capsule) return halfHeight + radius;   // segment + cap
         return std::sqrt(halfHeight * halfHeight + radius * radius);  // cylinder
     }
 
@@ -180,6 +181,33 @@ inline Body makeBox(int id, const V3& x, const Q& q, const V3& halfExtents,
     b.invInertiaBody = {Ix > 0 ? 1.0 / Ix : 0.0,
                         Iy > 0 ? 1.0 / Iy : 0.0,
                         Iz > 0 ? 1.0 / Iz : 0.0};
+    return b;
+}
+
+// Factory: a solid capsule -- a cylinder of radius r and length 2*halfHeight
+// (axis along body +Y) capped by two hemispheres. The inertia is exact in both
+// limits: a sphere when halfHeight -> 0, a thin rod when r -> 0.
+inline Body makeCapsule(int id, const V3& x, const Q& q, double radius,
+                        double halfHeight, double density) {
+    Body b;
+    b.shape = Shape::Capsule;
+    b.id = id;
+    b.x = x;
+    b.q = q;
+    b.radius = radius;
+    b.halfHeight = halfHeight;
+    const double r = radius, L = 2.0 * halfHeight;      // cylindrical length
+    const double mc = density * ne::PI * r * r * L;     // cylinder part
+    const double mh = density * (4.0 / 3.0) * ne::PI * r * r * r;  // two hemispheres
+    const double m = mc + mh;
+    b.invMass = (m > 0) ? 1.0 / m : 0.0;
+    // About the axis (Y): cylinder 1/2 m r^2 + hemispheres 2/5 m r^2.
+    double Iyy = 0.5 * mc * r * r + 0.4 * mh * r * r;
+    // Perpendicular: cylinder m(r^2/4 + L^2/12) + caps offset ~ L/2.
+    double Ixx = mc * (0.25 * r * r + L * L / 12.0) + mh * (0.4 * r * r + 0.25 * L * L);
+    b.invInertiaBody = {Ixx > 0 ? 1.0 / Ixx : 0.0,
+                        Iyy > 0 ? 1.0 / Iyy : 0.0,
+                        Ixx > 0 ? 1.0 / Ixx : 0.0};
     return b;
 }
 
