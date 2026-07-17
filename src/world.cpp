@@ -5,6 +5,7 @@
 #include "epa.hpp"
 #include "detect.hpp"
 #include "manifold.hpp"
+#include "queries.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -46,7 +47,9 @@ double combineMat(World::Combine m, double a, double b) {
 
 void World::step() {
     applyJointForces();     // spring joints add forces before integration
+    for (Body& b : bodies) b.prevX = b.x;   // snapshot for continuous collision
     integrate();
+    ccdPass();              // stop fast CCD bodies before they tunnel
     collide();
     solveRigidJoints(8);    // bilateral distance constraints
     solveJoints(8);         // ball / hinge / fixed / slider
@@ -509,6 +512,45 @@ void World::applyWalls() {
                         *pv[axis] = -restitution * *pv[axis];
                 }
             }
+        }
+    }
+}
+
+// Continuous collision: for each fast CCD body, sweep a sphere of its bounding
+// radius from its pre-step pose along this step's displacement; if it would reach
+// another body's surface before the move completes, clamp it to that impact and
+// cancel the velocity going into the surface. The next discrete step then resolves
+// the contact normally. Conservative (bounding-sphere sweep) -> never tunnels.
+void World::ccdPass() {
+    const size_t n = bodies.size();
+    for (size_t i = 0; i < n; ++i) {
+        Body& bi = bodies[i];
+        if (!bi.ccd || bi.invMass <= 0.0 || bi.sleeping) continue;
+        V3 disp = bi.x - bi.prevX;
+        double dist = disp.norm();
+        double R = bi.boundingRadius();
+        if (dist < R * 0.5 || dist < 1e-9) continue;   // too slow to tunnel
+        V3 dir = disp / dist;
+        double bestT = dist; V3 bestN; bool hit = false;
+        for (size_t j = 0; j < n; ++j) {
+            if (j == i) continue;
+            const Body& bj = bodies[j];
+            if (bj.sensor) continue;
+            if (!layersCollide(bi, bj)) continue;
+            Body infl = bj;                              // inflate bj by the sweep radius
+            infl.radius += R;
+            if (bj.shape == Shape::Box) infl.halfExtents = bj.halfExtents + V3{R, R, R};
+            else if (bj.shape == Shape::Cylinder) infl.halfHeight = bj.halfHeight + R;
+            V3 cImg = bi.prevX + box.minImage(bj.x - bi.prevX);
+            double t; V3 p, nn;
+            if (rayVsBody(infl, cImg, bi.prevX, dir, bestT, t, p, nn) && t < bestT) {
+                bestT = t; bestN = nn; hit = true;
+            }
+        }
+        if (hit) {
+            bi.x = bi.prevX + dir * bestT;               // stop at the impact
+            double vn = bi.v.dot(bestN);
+            if (vn < 0.0) bi.v -= bestN * vn;            // cancel motion into the surface
         }
     }
 }

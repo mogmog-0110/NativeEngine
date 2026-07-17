@@ -138,6 +138,7 @@ private:
     // Candidate pairs (sorted, i<j) from the broadphase.
     std::vector<std::pair<std::size_t, std::size_t>> broadphasePairs() const;
     void updateSleep();    // put settled bodies to sleep
+    void ccdPass();        // sweep fast CCD bodies, stop them before tunneling
     void applyWalls();     // reflective boundary
     void wrapPositions();  // periodic boundary
 };

@@ -89,6 +89,13 @@ struct Body {
     // response (the solver skips any pair touching a sensor). A trigger volume.
     bool sensor = false;
 
+    // Continuous collision: when set, a fast body is swept from its pre-step pose
+    // and stopped at the first impact so it cannot tunnel through thin geometry in
+    // one step. Off by default (the discrete solver is used). prevX is the pose
+    // captured before integration, for the sweep.
+    bool ccd = false;
+    V3 prevX;
+
     bool isSphere() const { return shape == Shape::Sphere; }
 
     // Radius of a bounding sphere about the centre (for broadphase).

@@ -237,6 +237,8 @@ public:
     // A sensor detects overlap but has no physical response, and reports through
     // the trigger enter/stay/exit callbacks instead of the contact ones.
     void setSensor(BodyId h, bool on) { if (Body* b = body(h)) b->sensor = on; }
+    // Continuous collision for a fast body (won't tunnel through thin geometry).
+    void setCcd(BodyId h, bool on) { if (Body* b = body(h)) b->ccd = on; }
 
     // --- events ---
     // Legacy: fires once per solid overlapping pair every step.

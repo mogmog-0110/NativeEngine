@@ -1159,6 +1159,24 @@ void test_character() {
     check(cc.grounded(), "character: still grounded after walking");
 }
 
+void test_ccd() {
+    // A tiny fast sphere fired at a thin static wall: tunnels without CCD, is
+    // stopped at the wall with CCD.
+    auto finalX = [](bool ccd) {
+        World w;
+        w.dt = 1.0 / 60.0; w.box.half = 5000.0; w.restitution = 0.0;
+        Body wall = makeBox(0, V3{0, 0, 0}, Q{1, 0, 0, 0}, V3{0.05, 5, 5}, 1.0);
+        wall.invMass = 0; wall.invInertiaBody = {0, 0, 0}; wall.dynamic = false;
+        Body ball = makeSphere(1, V3{-5, 0, 0}, 0.2, 1.0);
+        ball.v = {600, 0, 0}; ball.ccd = ccd;               // 10 units/step at dt=1/60
+        w.bodies = {wall, ball};
+        for (int s = 0; s < 20; ++s) w.step();
+        return w.bodies[1].x.x;
+    };
+    check(finalX(false) > 1.0, "ccd: OFF -> the fast ball tunnels through the wall");
+    check(finalX(true) < 0.3, "ccd: ON -> the ball is stopped at the wall (no tunneling)");
+}
+
 }  // namespace
 
 int runSelftest() {
@@ -1199,6 +1217,7 @@ int runSelftest() {
     test_general_joints();
     test_plane_and_convex();
     test_character();
+    test_ccd();
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
