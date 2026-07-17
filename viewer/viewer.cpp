@@ -305,6 +305,14 @@ static void buildScene(int id) {
                 Body b = makeSphere(gNextId++, {urand(-8.5, 8.5), urand(-8.5, 8.5), urand(-8.5, 8.5)}, 0.8, 1.0);
                 b.v = {urand(-4, 4), urand(-4, 4), urand(-4, 4)}; gWorld.bodies.push_back(b);
             }
+            // Zero the net momentum so the whole cloud does not drift + wrap as one
+            // (standard MD practice: no centre-of-mass motion). PBC conserves the
+            // total momentum, so an un-zeroed cloud streams across the box forever,
+            // which reads as "everything drifts off" even though it is correct.
+            V3 psum; double M = 0;
+            for (const Body& b : gWorld.bodies) { double m = 1.0 / b.invMass; psum += b.v * m; M += m; }
+            V3 vcm = psum * (1.0 / M);
+            for (Body& b : gWorld.bodies) b.v -= vcm;
             break;
         }
         case 9: {  // two spheres colliding ACROSS the periodic boundary
@@ -317,6 +325,10 @@ static void buildScene(int id) {
     }
     gDist = gWorld.box.half * (gShowCell ? 2.8f : 1.4f);
     gCenter = {0, gShowCell ? 0.0f : 5.0f, 0};
+    // In a periodic scene, default the wrap-around ghosts ON so a body leaving one
+    // face is visibly re-entering the opposite one -- otherwise the wrap looks like
+    // a teleport and cross-boundary collisions look like bouncing off nothing.
+    gViz.ghosts = gWorld.box.periodic;
 }
 static const char* kSceneNames[kNumScenes] = {
     "1 box pyramid", "2 brick wall + projectile", "3 dominoes", "4 sphere pile",
