@@ -18,6 +18,7 @@ using namespace nv;
 static Recording gRec;
 static int   gFrame = 0;
 static bool  gPaused = false;
+static bool  gLoop = false;         // play once and hold by default (no reset)
 static float gSpeed = 1.0f;         // frames advanced per tick
 static float gAccum = 0.0f;
 static int   gWinW = 1280, gWinH = 800;
@@ -263,7 +264,12 @@ static void reshape(int w, int h) { gWinW = w; gWinH = h; glViewport(0, 0, w, h)
 static void timer(int) {
     if (!gPaused && !gRec.frames.empty()) {
         gAccum += gSpeed;
-        while (gAccum >= 1.0f) { gFrame = (gFrame + 1) % gRec.numFrames(); gAccum -= 1.0f; }
+        while (gAccum >= 1.0f) {
+            if (gFrame + 1 < (int)gRec.numFrames()) ++gFrame;   // advance
+            else if (gLoop) gFrame = 0;                          // loop only if asked
+            else { gPaused = true; break; }                     // else hold on the last frame
+            gAccum -= 1.0f;
+        }
     }
     glutPostRedisplay();
     glutTimerFunc(16, timer, 0);
@@ -282,7 +288,8 @@ static void key(unsigned char k, int, int) {
         case ']': gFrame = (gFrame + 1) % gRec.numFrames(); gPaused = true; break;
         case ',': gSpeed = gSpeed > 0.1f ? gSpeed * 0.7f : gSpeed; break;
         case '.': gSpeed *= 1.4f; break;
-        case 'r': gFrame = 0; break;
+        case 'r': gFrame = 0; gPaused = false; gAccum = 0; break;   // replay from start
+        case 'l': gLoop = !gLoop; break;                            // toggle looping
         case 'h': fitCamera(); break;
     }
     glutPostRedisplay();
@@ -314,7 +321,7 @@ int main(int argc, char** argv) {
     glutInitContextVersion(3, 3);
     glutInitContextProfile(GLUT_CORE_PROFILE);
     glutInitWindowSize(gWinW, gWinH);
-    glutCreateWindow("NativeEngine Viewer  [space pause  [ ] step  , . speed  h reset-cam  drag orbit]");
+    glutCreateWindow("NativeEngine Viewer  [space pause  [ ] step  , . speed  r replay  l loop  h cam  drag orbit]");
     if (!loadGL()) { std::fprintf(stderr, "failed to load OpenGL 3.3 functions\n"); return 1; }
 
     glEnable(GL_DEPTH_TEST);
