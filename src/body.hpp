@@ -56,6 +56,9 @@ struct Body {
     double linearDamping = 0.0;
     double angularDamping = 0.0;
 
+    // Per-body gravity multiplier (1 = full world gravity; 0 = floats; <0 = rises).
+    double gravityScale = 1.0;
+
     // Collision filtering. `layer` is an index (0..31); `mask` is the set of
     // layers this body collides with. Two bodies collide iff each one's mask
     // contains the other's layer. Defaults (layer 0, mask = all) collide with
@@ -95,6 +98,7 @@ struct Body {
     // captured before integration, for the sweep.
     bool ccd = false;
     V3 prevX;
+    Q prevQ{1, 0, 0, 0};   // pre-step orientation, for render interpolation
 
     bool isSphere() const { return shape == Shape::Sphere; }
 

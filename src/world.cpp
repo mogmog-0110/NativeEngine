@@ -47,7 +47,7 @@ double combineMat(World::Combine m, double a, double b) {
 
 void World::step() {
     applyJointForces();     // spring joints add forces before integration
-    for (Body& b : bodies) b.prevX = b.x;   // snapshot for continuous collision
+    for (Body& b : bodies) { b.prevX = b.x; b.prevQ = b.q; }   // snapshot: CCD + interpolation
     integrate();
     ccdPass();              // stop fast CCD bodies before they tunnel
     collide();
@@ -270,9 +270,9 @@ void World::integrate() {
             b.torque = {};
             continue;
         }
-        // Linear: symplectic Euler. Gravity is an acceleration (mass-independent);
-        // applied forces divide by mass.
-        b.v += (gravity + b.force * b.invMass) * dt;
+        // Linear: symplectic Euler. Gravity is an acceleration (mass-independent),
+        // scaled per body; applied forces divide by mass.
+        b.v += (gravity * b.gravityScale + b.force * b.invMass) * dt;
         b.x += b.v * dt;
 
         // Rotational: integrate ANGULAR MOMENTUM, not angular velocity. For an

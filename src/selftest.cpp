@@ -1177,6 +1177,47 @@ void test_ccd() {
     check(finalX(true) < 0.3, "ccd: ON -> the ball is stopped at the wall (no tunneling)");
 }
 
+void test_integration_api() {
+    // (a) per-body gravity scale
+    {
+        PhysicsWorld pw;
+        pw.setBox(1000.0, false); pw.setTimestep(1.0 / 240.0); pw.setGravity(V3{0, -10, 0});
+        BodyId floats = pw.addSphere(V3{0, 0, 0}, 0.5, 1.0); pw.setGravityScale(floats, 0.0);
+        BodyId falls = pw.addSphere(V3{5, 0, 0}, 0.5, 1.0);
+        for (int s = 0; s < 120; ++s) pw.step();
+        check(close(pw.position(floats).y, 0.0, 1e-6), "gravityScale 0: body floats");
+        check(pw.position(falls).y < -1.0, "gravityScale 1: body falls");
+    }
+    // (b) torque / force-at-point API
+    {
+        PhysicsWorld pw;
+        pw.setBox(1000.0, false); pw.setTimestep(1.0 / 240.0);
+        BodyId b = pw.addSphere(V3{0, 0, 0}, 1.0, 1.0);
+        for (int s = 0; s < 10; ++s) { pw.applyTorque(b, V3{0, 5, 0}); pw.step(); }
+        check(pw.angularVelocity(b).y > 0.1, "applyTorque: spins the body about the axis");
+    }
+    // (c) render interpolation
+    {
+        PhysicsWorld pw;
+        pw.setBox(1000.0, false); pw.setTimestep(1.0 / 240.0);
+        BodyId b = pw.addSphere(V3{0, 0, 0}, 0.5, 1.0); pw.setVelocity(b, V3{10, 0, 0});
+        pw.step();
+        V3 mid = pw.interpolatedPosition(b, 0.5);
+        check(close(mid.x, pw.position(b).x * 0.5, 1e-9), "interpolation: alpha 0.5 is midway from prev to current");
+    }
+    // (d) debug-draw hook emits line segments
+    {
+        PhysicsWorld pw;
+        pw.setBox(1000.0, false); pw.setTimestep(1.0 / 240.0);
+        pw.addBox(V3{0, 0, 0}, Q{1, 0, 0, 0}, V3{1, 1, 1}, 1.0);
+        pw.addSphere(V3{3, 0, 0}, 1.0, 1.0);
+        int count = 0;
+        pw.debugDraw([&](const V3&, const V3&, const V3&) { ++count; },
+                     PhysicsWorld::DbgColliders | PhysicsWorld::DbgAABB);
+        check(count > 20, "debugDraw: emits collider + AABB line segments");
+    }
+}
+
 }  // namespace
 
 int runSelftest() {
@@ -1218,6 +1259,7 @@ int runSelftest() {
     test_plane_and_convex();
     test_character();
     test_ccd();
+    test_integration_api();
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

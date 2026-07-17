@@ -131,6 +131,16 @@ inline Q integrateOrientation(const Q& q, const V3& omega, double dt) {
     return (q + dq).normalized();
 }
 
+inline V3 lerp(const V3& a, const V3& b, double t) { return a + (b - a) * t; }
+
+// Normalised lerp between quaternions (cheap slerp approximation; exact enough
+// for one fixed physics step of render interpolation). Takes the shortest arc.
+inline Q nlerp(const Q& a, Q b, double t) {
+    if (a.w * b.w + a.x * b.x + a.y * b.y + a.z * b.z < 0.0) b = b * -1.0;
+    return Q{a.w + (b.w - a.w) * t, a.x + (b.x - a.x) * t,
+             a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t}.normalized();
+}
+
 // The world-frame angular velocity that rotates `from` to `to` over dt (inverse
 // of integrateOrientation, used to drive kinematic bodies to a target pose).
 inline V3 angularVelocityBetween(const Q& from, const Q& to, double dt) {

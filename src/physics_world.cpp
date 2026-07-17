@@ -9,7 +9,83 @@ namespace ne {
 
 namespace {
 bool layerAllowed(std::uint32_t mask, const Body& b) { return (mask & (1u << (b.layer & 31u))) != 0; }
+
+void drawCircle(const PhysicsWorld::LineFn& line, const V3& c, const V3& u, const V3& v,
+                double r, const V3& col, int segs = 20) {
+    V3 prev = c + u * r;
+    for (int i = 1; i <= segs; ++i) {
+        double a = (double)i / segs * 2.0 * PI;
+        V3 p = c + (u * std::cos(a) + v * std::sin(a)) * r;
+        line(prev, p, col); prev = p;
+    }
+}
+void drawAabb(const PhysicsWorld::LineFn& line, const V3& c, double h, const V3& col) {
+    V3 vtx[8];
+    for (int i = 0; i < 8; ++i)
+        vtx[i] = {c.x + ((i & 1) ? h : -h), c.y + ((i & 2) ? h : -h), c.z + ((i & 4) ? h : -h)};
+    int e[12][2] = {{0,1},{1,3},{3,2},{2,0},{4,5},{5,7},{7,6},{6,4},{0,4},{1,5},{2,6},{3,7}};
+    for (auto& ed : e) line(vtx[ed[0]], vtx[ed[1]], col);
+}
 }  // namespace
+
+void PhysicsWorld::debugDraw(const LineFn& line, std::uint32_t flags) const {
+    const V3 cCol{0.4, 0.8, 0.5}, aCol{0.3, 0.5, 0.35}, vCol{0.4, 0.9, 0.5};
+    const V3 ctCol{1.0, 0.9, 0.2}, nCol{0.2, 0.85, 1.0}, jCol{0.9, 0.6, 0.2}, comCol{1, 1, 1};
+
+    for (const Body& b : w_.bodies) {
+        if (flags & DbgColliders) {
+            Mat3 R = b.rotationMatrix();
+            V3 ex{R.m[0], R.m[3], R.m[6]}, ey{R.m[1], R.m[4], R.m[7]}, ez{R.m[2], R.m[5], R.m[8]};
+            if (b.shape == Shape::Sphere) {
+                drawCircle(line, b.x, ex, ey, b.radius, cCol);
+                drawCircle(line, b.x, ey, ez, b.radius, cCol);
+                drawCircle(line, b.x, ex, ez, b.radius, cCol);
+            } else if (b.shape == Shape::Box) {
+                V3 he = b.halfExtents; V3 c[8];
+                for (int i = 0; i < 8; ++i)
+                    c[i] = b.x + ex * ((i & 1) ? he.x : -he.x) + ey * ((i & 2) ? he.y : -he.y) + ez * ((i & 4) ? he.z : -he.z);
+                int e[12][2] = {{0,1},{1,3},{3,2},{2,0},{4,5},{5,7},{7,6},{6,4},{0,4},{1,5},{2,6},{3,7}};
+                for (auto& ed : e) line(c[ed[0]], c[ed[1]], cCol);
+            } else if (b.shape == Shape::Capsule || b.shape == Shape::Cylinder) {
+                V3 top = b.x + ey * b.halfHeight, bot = b.x - ey * b.halfHeight;
+                drawCircle(line, top, ex, ez, b.radius, cCol);
+                drawCircle(line, bot, ex, ez, b.radius, cCol);
+                for (int k = 0; k < 4; ++k) {
+                    double a = k * PI / 2.0; V3 off = (ex * std::cos(a) + ez * std::sin(a)) * b.radius;
+                    line(bot + off, top + off, cCol);
+                }
+            } else {
+                drawAabb(line, b.x, b.boundingRadius(), cCol);   // convex / plane
+            }
+        }
+        if (flags & DbgAABB) drawAabb(line, b.x, b.boundingRadius(), aCol);
+        if ((flags & DbgVelocities) && b.invMass > 0.0) line(b.x, b.x + b.v * 0.1, vCol);
+        if (flags & DbgCOM) {
+            double s = 0.1;
+            line(b.x - V3{s, 0, 0}, b.x + V3{s, 0, 0}, comCol);
+            line(b.x - V3{0, s, 0}, b.x + V3{0, s, 0}, comCol);
+            line(b.x - V3{0, 0, s}, b.x + V3{0, 0, s}, comCol);
+        }
+    }
+    if (flags & DbgContacts) {
+        for (const ContactViz& c : w_.debugContacts) {
+            double s = 0.12;
+            line(c.point - V3{s, 0, 0}, c.point + V3{s, 0, 0}, ctCol);
+            line(c.point - V3{0, s, 0}, c.point + V3{0, s, 0}, ctCol);
+            line(c.point - V3{0, 0, s}, c.point + V3{0, 0, s}, ctCol);
+            line(c.point, c.point + c.normal * 0.4, nCol);
+        }
+    }
+    if (flags & DbgJoints) {
+        auto anchorWorld = [&](BodyId h, const V3& local) -> V3 {
+            const Body* b = body(h); return b ? b->x + b->q.rotate(local) : V3{};
+        };
+        for (const FacadeJoint& j : joints_)
+            line(anchorWorld(j.a, j.localA), anchorWorld(j.b, j.localB), jCol);
+        for (const Joint& j : gjoints_)
+            line(anchorWorld((BodyId)j.a, j.localA), anchorWorld((BodyId)j.b, j.localB), jCol);
+    }
+}
 
 RayHit PhysicsWorld::raycast(const V3& origin, const V3& dir, double maxDist,
                              std::uint32_t mask) const {

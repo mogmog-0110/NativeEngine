@@ -204,6 +204,11 @@ public:
     void setAngularVelocity(BodyId h, const V3& w) { if (Body* b = body(h)) { World::wake(*b); b->w = w; } }
 
     void applyForce(BodyId h, const V3& f) { if (Body* b = body(h)) { World::wake(*b); b->force += f; } }
+    void applyTorque(BodyId h, const V3& t) { if (Body* b = body(h)) { World::wake(*b); b->torque += t; } }
+    // Force applied at a world point over the step (produces torque too).
+    void applyForceAtPoint(BodyId h, const V3& f, const V3& point) {
+        if (Body* b = body(h)) { World::wake(*b); b->force += f; b->torque += (point - b->x).cross(f); }
+    }
     void applyImpulse(BodyId h, const V3& imp) {
         if (Body* b = body(h)) { World::wake(*b); b->v += imp * b->invMass; }
     }
@@ -215,6 +220,33 @@ public:
             b->w += b->applyInvInertiaWorld((point - b->x).cross(imp));
         }
     }
+    void applyAngularImpulse(BodyId h, const V3& angImp) {
+        if (Body* b = body(h)) { World::wake(*b); b->w += b->applyInvInertiaWorld(angImp); }
+    }
+    void setGravityScale(BodyId h, double s) { if (Body* b = body(h)) b->gravityScale = s; }
+
+    // --- render interpolation ---
+    // Pose blended between the pre-step and post-step states; call with the render
+    // accumulator ratio alpha in [0,1] for judder-free rendering at a fixed step.
+    V3 interpolatedPosition(BodyId h, double alpha) const {
+        const Body* b = body(h); return b ? lerp(b->prevX, b->x, alpha) : V3{};
+    }
+    Q interpolatedOrientation(BodyId h, double alpha) const {
+        const Body* b = body(h); return b ? nlerp(b->prevQ, b->q, alpha) : Q{};
+    }
+
+    // --- debug draw hook (feeds the embedder's own renderer) ---
+    enum DebugFlags {
+        DbgColliders  = 1 << 0,
+        DbgAABB       = 1 << 1,
+        DbgContacts   = 1 << 2,   // requires contacts capture (enabled here)
+        DbgVelocities = 1 << 3,
+        DbgJoints     = 1 << 4,
+        DbgCOM        = 1 << 5,
+        DbgAll        = 0x3f,
+    };
+    using LineFn = std::function<void(const V3& a, const V3& b, const V3& color)>;
+    void debugDraw(const LineFn& line, std::uint32_t flags = DbgColliders) const;
 
     // --- per-body properties (game backend surface) ---
     // Material: friction / restitution for this body; combined with the partner's
@@ -239,6 +271,8 @@ public:
     void setSensor(BodyId h, bool on) { if (Body* b = body(h)) b->sensor = on; }
     // Continuous collision for a fast body (won't tunnel through thin geometry).
     void setCcd(BodyId h, bool on) { if (Body* b = body(h)) b->ccd = on; }
+    // Enable capture of solver contact points (needed for DbgContacts debug draw).
+    void setDebugContactCapture(bool on) { w_.captureContacts = on; }
 
     // --- events ---
     // Legacy: fires once per solid overlapping pair every step.
