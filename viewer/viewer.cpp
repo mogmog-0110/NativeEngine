@@ -16,6 +16,7 @@
 
 #include "world.hpp"
 #include "body.hpp"
+#include "detect.hpp"
 
 #include "imgui.h"
 #include "backends/imgui_impl_glut.h"
@@ -36,9 +37,19 @@ static std::mt19937_64 gRng(12345);
 // visualization toggles (the debugger's "eyes")
 static struct Viz {
     bool arrows = false, contacts = true, aabb = false, dimSleep = true;
-    bool ghosts = false, grid = true, showCellAlways = false;
+    bool ghosts = false, grid = true, showCellAlways = false, joints = true;
     float velScale = 0.25f;
 } gViz;
+
+// An interactive WASD capsule character (scene 15). Not a rigid body: moved by
+// collide-and-slide against the world, rendered separately.
+static struct Character {
+    bool active = false;
+    V3 pos; V3 vel;
+    double r = 0.4, hh = 0.6;
+    bool grounded = false;
+} gChar;
+static bool gKey[256] = {false};
 
 // camera / window
 static float gAz = 0.7f, gEl = 0.45f, gDist = 40.0f;
@@ -210,7 +221,7 @@ static Vec3 v3(const V3& d) { return {(float)d.x, (float)d.y, (float)d.z}; }
 
 // ------------------------------------------------------------------ scenes
 static int gNextId = 0;
-static const int kNumScenes = 9;
+static const int kNumScenes = 15;
 static double urand(double a, double b) { std::uniform_real_distribution<double> d(a, b); return d(gRng); }
 
 static void addGround(double half = 30.0) {
@@ -218,6 +229,35 @@ static void addGround(double half = 30.0) {
     f.invMass = 0; f.invInertiaBody = {0, 0, 0}; f.dynamic = false;
     gWorld.bodies.push_back(f);
 }
+static std::size_t gKinBody = (std::size_t)-1;   // kinematic platform index (scene 12)
+
+// Joint builders operating directly on gWorld (world anchors, world axis).
+static void addBallJ(std::size_t a, std::size_t b, const V3& w) {
+    Joint j; j.type = JointType::Ball; j.a = a; j.b = b;
+    j.localA = gWorld.bodies[a].q.inverseRotate(w - gWorld.bodies[a].x);
+    j.localB = gWorld.bodies[b].q.inverseRotate(w - gWorld.bodies[b].x);
+    gWorld.joints.push_back(j);
+}
+static void addHingeJ(std::size_t a, std::size_t b, const V3& w, const V3& axis) {
+    Joint j; j.type = JointType::Hinge; j.a = a; j.b = b;
+    j.localA = gWorld.bodies[a].q.inverseRotate(w - gWorld.bodies[a].x);
+    j.localB = gWorld.bodies[b].q.inverseRotate(w - gWorld.bodies[b].x);
+    V3 ax = axis.normalized();
+    j.axisA = gWorld.bodies[a].q.inverseRotate(ax);
+    j.axisB = gWorld.bodies[b].q.inverseRotate(ax);
+    j.refRel = gWorld.bodies[a].q * gWorld.bodies[b].q.conjugate();
+    gWorld.joints.push_back(j);
+}
+static Q qAxisAngle(const V3& axis, double ang) {
+    V3 a = axis.normalized(); double s = std::sin(ang * 0.5);
+    return Q{std::cos(ang * 0.5), a.x * s, a.y * s, a.z * s};
+}
+static Body makeStaticBox(const V3& pos, const Q& rot, const V3& he) {
+    Body b = makeBox(gNextId++, pos, rot, he, 1.0);
+    b.invMass = 0; b.invInertiaBody = {0, 0, 0}; b.dynamic = false;
+    return b;
+}
+
 static void openGravityWorld() {
     gWorld.openBoundary = true; gWorld.gravity = {0, -10, 0};
     gWorld.friction = 0.6; gWorld.restitution = 0.0; gWorld.sleepEnabled = true;
@@ -228,6 +268,7 @@ static void buildScene(int id) {
     gWorld = World{};
     gWorld.dt = 1.0 / 240.0;
     gNextId = 0; gScene = id; gShowCell = false; gSelected = -1; gSimTime = 0.0;
+    gChar.active = false; gKinBody = (std::size_t)-1;
     gRng.seed(12345);
 
     switch (id) {
@@ -322,8 +363,131 @@ static void buildScene(int id) {
             gWorld.bodies.push_back(a); gWorld.bodies.push_back(b);
             break;
         }
+        case 10: {  // ragdoll: capsules + a head linked by ball joints, dropped
+            openGravityWorld(); addGround(); gWorld.sleepEnabled = false;
+            std::size_t g = gWorld.bodies.size() - 1; (void)g;
+            V3 c{0, 8, 0};
+            std::size_t torso = gWorld.bodies.size();
+            gWorld.bodies.push_back(makeCapsule(gNextId++, c, Q{1, 0, 0, 0}, 0.35, 0.9, 1.0));
+            std::size_t head = gWorld.bodies.size();
+            gWorld.bodies.push_back(makeSphere(gNextId++, c + V3{0, 1.6, 0}, 0.45, 1.0));
+            addBallJ(torso, head, c + V3{0, 1.25, 0});
+            // arms (along X) and legs (down), each a capsule on a ball joint
+            for (int s = -1; s <= 1; s += 2) {
+                std::size_t arm = gWorld.bodies.size();
+                gWorld.bodies.push_back(makeCapsule(gNextId++, c + V3{s * 1.1, 0.9, 0},
+                                        qAxisAngle({0, 0, 1}, PI / 2), 0.22, 0.7, 1.0));
+                addBallJ(torso, arm, c + V3{s * 0.45, 1.1, 0});
+                std::size_t leg = gWorld.bodies.size();
+                gWorld.bodies.push_back(makeCapsule(gNextId++, c + V3{s * 0.4, -2.0, 0}, Q{1, 0, 0, 0}, 0.26, 0.9, 1.0));
+                addBallJ(torso, leg, c + V3{s * 0.4, -1.0, 0});
+            }
+            break;
+        }
+        case 11: {  // heightfield terrain with objects tumbling down it
+            openGravityWorld(); gWorld.restitution = 0.1;
+            const int N = 24; const double sp = 2.0;
+            std::vector<V3> verts; std::vector<int> idx;
+            std::mt19937_64 rng(7);
+            std::uniform_real_distribution<double> hh(0.0, 2.2);
+            for (int r = 0; r < N; ++r)
+                for (int c = 0; c < N; ++c) {
+                    double d = std::sqrt((r - N / 2.0) * (r - N / 2.0) + (c - N / 2.0) * (c - N / 2.0));
+                    double h = std::sin(r * 0.5) * std::cos(c * 0.5) * 1.2 + (d > 8 ? (d - 8) * 0.6 : 0) + hh(rng) * 0.2;
+                    verts.push_back(V3{(c - N / 2.0) * sp, h, (r - N / 2.0) * sp});
+                }
+            for (int r = 0; r + 1 < N; ++r)
+                for (int c = 0; c + 1 < N; ++c) {
+                    int i00 = r * N + c, i01 = i00 + 1, i10 = i00 + N, i11 = i10 + 1;
+                    idx.insert(idx.end(), {i00, i10, i11, i00, i11, i01});
+                }
+            auto md = std::make_shared<MeshData>(); md->verts = verts;
+            for (std::size_t i = 0; i + 2 < idx.size(); i += 3) md->tris.push_back({idx[i], idx[i + 1], idx[i + 2]});
+            md->build();
+            gWorld.bodies.push_back(makeMesh(gNextId++, {0, 0, 0}, Q{1, 0, 0, 0}, md));
+            for (int i = 0; i < 40; ++i) {
+                int k = i % 3;
+                if (k == 0) gWorld.bodies.push_back(makeSphere(gNextId++, {urand(-6, 6), urand(8, 16), urand(-6, 6)}, 0.6, 1.0));
+                else if (k == 1) gWorld.bodies.push_back(makeBox(gNextId++, {urand(-6, 6), urand(8, 16), urand(-6, 6)}, Q{1, 0, 0, 0}, {0.6, 0.6, 0.6}, 1.0));
+                else gWorld.bodies.push_back(makeCapsule(gNextId++, {urand(-6, 6), urand(8, 16), urand(-6, 6)}, Q{1, 0, 0, 0}, 0.4, 0.5, 1.0));
+            }
+            gWorld.box.half = 60;
+            break;
+        }
+        case 12: {  // kinematic moving platform carrying a stack of boxes
+            openGravityWorld(); addGround(); gWorld.friction = 0.9;
+            std::size_t plat = gWorld.bodies.size();
+            Body p = makeBox(gNextId++, {0, 1.5, 0}, Q{1, 0, 0, 0}, {3, 0.3, 3}, 1.0);
+            p.invMass = 0; p.invInertiaBody = {0, 0, 0}; p.dynamic = false; p.kinematic = true;
+            gWorld.bodies.push_back(p);
+            gKinBody = plat;
+            for (int i = 0; i < 4; ++i)
+                gWorld.bodies.push_back(makeBox(gNextId++, {0, 2.3 + i * 1.05, 0}, Q{1, 0, 0, 0}, {0.5, 0.5, 0.5}, 1.0));
+            break;
+        }
+        case 13: {  // suspension bridge of planks linked by hinges
+            openGravityWorld(); gWorld.sleepEnabled = false;
+            const int N = 12; const double pw = 1.0;
+            std::size_t left = gWorld.bodies.size();
+            Body la = makeBox(gNextId++, {-(N * pw) / 2 - 1, 6, 0}, Q{1, 0, 0, 0}, {1, 1, 2}, 1.0);
+            la.invMass = 0; la.invInertiaBody = {0, 0, 0}; la.dynamic = false;
+            gWorld.bodies.push_back(la);
+            std::size_t prev = left;
+            for (int i = 0; i < N; ++i) {
+                std::size_t plank = gWorld.bodies.size();
+                double x = -(N * pw) / 2 + pw * 0.5 + i * pw;
+                gWorld.bodies.push_back(makeBox(gNextId++, {x, 6, 0}, Q{1, 0, 0, 0}, {pw * 0.5, 0.12, 2}, 1.0));
+                addHingeJ(prev, plank, {x - pw * 0.5, 6, 0}, {0, 0, 1});
+                prev = plank;
+            }
+            Body ra = makeBox(gNextId++, {(N * pw) / 2 + 1, 6, 0}, Q{1, 0, 0, 0}, {1, 1, 2}, 1.0);
+            ra.invMass = 0; ra.invInertiaBody = {0, 0, 0}; ra.dynamic = false;
+            std::size_t right = gWorld.bodies.size(); gWorld.bodies.push_back(ra);
+            addHingeJ(prev, right, {(N * pw) / 2, 6, 0}, {0, 0, 1});
+            for (int i = 0; i < 6; ++i)
+                gWorld.bodies.push_back(makeSphere(gNextId++, {urand(-3, 3), 10.0 + i, 0}, 0.5, 2.0));
+            gWorld.box.half = 30;
+            break;
+        }
+        case 14: {  // compound bodies (dumbbells + tables) tumbling
+            openGravityWorld(); addGround();
+            for (int i = 0; i < 6; ++i) {
+                std::vector<ChildShape> kids = {ChildShape::sphere({-1.1, 0, 0}, 0.6),
+                                                ChildShape::sphere({1.1, 0, 0}, 0.6),
+                                                ChildShape::cylinder({0, 0, 0}, qAxisAngle({0, 0, 1}, PI / 2), 0.2, 1.0)};
+                gWorld.bodies.push_back(makeCompound(gNextId++, {urand(-5, 5), 4.0 + i * 2.5, urand(-5, 5)},
+                                        qAxisAngle({urand(-1, 1), urand(-1, 1), urand(-1, 1)}, urand(0, 3)), kids, 1.0));
+            }
+            for (int i = 0; i < 4; ++i) {   // little tables
+                std::vector<ChildShape> t = {ChildShape::box({0, 0.6, 0}, Q{1, 0, 0, 0}, {1.0, 0.15, 1.0})};
+                for (int c = 0; c < 4; ++c) {
+                    double sx = (c & 1) ? 0.8 : -0.8, sz = (c & 2) ? 0.8 : -0.8;
+                    t.push_back(ChildShape::box({sx, 0, sz}, Q{1, 0, 0, 0}, {0.12, 0.6, 0.12}));
+                }
+                gWorld.bodies.push_back(makeCompound(gNextId++, {urand(-5, 5), 10.0 + i * 2.0, urand(-5, 5)}, Q{1, 0, 0, 0}, t, 1.0));
+            }
+            break;
+        }
+        case 15: {  // WASD capsule character on a box level (ramps + steps)
+            openGravityWorld();
+            gWorld.bodies.push_back(makeStaticBox({0, -0.5, 0}, Q{1, 0, 0, 0}, {25, 0.5, 25}));
+            // a ramp
+            gWorld.bodies.push_back(makeStaticBox({8, 1.2, 0}, qAxisAngle({0, 0, 1}, -0.5), {5, 0.3, 4}));
+            // steps
+            for (int i = 0; i < 5; ++i)
+                gWorld.bodies.push_back(makeStaticBox({-8.0, 0.4 + i * 0.4, i * 1.0 - 2}, Q{1, 0, 0, 0}, {2, 0.2 + i * 0.2, 0.5}));
+            // some walls / boxes to bump into
+            gWorld.bodies.push_back(makeStaticBox({0, 1.5, 12}, Q{1, 0, 0, 0}, {12, 2, 0.5}));
+            gWorld.bodies.push_back(makeStaticBox({0, 1.5, -12}, Q{1, 0, 0, 0}, {12, 2, 0.5}));
+            for (int i = 0; i < 6; ++i)
+                gWorld.bodies.push_back(makeBox(gNextId++, {urand(-4, 4), 1.0 + i, urand(-4, 4)}, Q{1, 0, 0, 0}, {0.5, 0.5, 0.5}, 1.0));
+            gChar.active = true; gChar.pos = {0, 2.0, 0}; gChar.vel = {0, 0, 0};
+            gWorld.box.half = 30;
+            break;
+        }
     }
     gDist = gWorld.box.half * (gShowCell ? 2.8f : 1.4f);
+    if (gChar.active) gDist = 14.0f;
     gCenter = {0, gShowCell ? 0.0f : 5.0f, 0};
     // In a periodic scene, default the wrap-around ghosts ON so a body leaving one
     // face is visibly re-entering the opposite one -- otherwise the wrap looks like
@@ -332,7 +496,9 @@ static void buildScene(int id) {
 }
 static const char* kSceneNames[kNumScenes] = {
     "1 box pyramid", "2 brick wall + projectile", "3 dominoes", "4 sphere pile",
-    "5 cylinder pile", "6 rope", "7 elastic gas (box)", "8 PERIODIC gas", "9 PERIODIC pair"};
+    "5 cylinder pile", "6 rope", "7 elastic gas (box)", "8 PERIODIC gas", "9 PERIODIC pair",
+    "10 ragdoll (joints)", "11 terrain (heightfield)", "12 kinematic platform",
+    "13 hinge bridge", "14 compound bodies", "15 CHARACTER (WASD)"};
 static void dropSphere() {
     Body b = makeSphere(gNextId++, {urand(-4, 4), 20.0, urand(-4, 4)}, 1.2, 1.0);
     gWorld.bodies.push_back(b);
@@ -376,7 +542,9 @@ static void pushKE(float e) { gKE[gKEHead] = e; gKEHead = (gKEHead + 1) % 180; }
 
 static void buildUI() {
     ImGuiIO& io = ImGui::GetIO();
-    const char* shapeName[3] = {"sphere", "cylinder", "box"};
+    // must cover every Shape enum value (out-of-range indexing crashes snprintf)
+    static const char* shapeName[] = {"sphere", "cylinder", "box", "capsule",
+                                      "convex", "plane", "mesh", "compound"};
 
     // ---- Simulation -------------------------------------------------------
     ImGui::SetNextWindowPos({10, 10}, ImGuiCond_FirstUseEver);
@@ -411,6 +579,8 @@ static void buildUI() {
     ImGui::Checkbox("bounding boxes", &gViz.aabb);
     ImGui::Checkbox("dim sleeping bodies", &gViz.dimSleep);
     ImGui::Checkbox("ground grid", &gViz.grid);
+    ImGui::SameLine(); ImGui::Checkbox("joints", &gViz.joints);
+    if (gChar.active) ImGui::TextDisabled("CHARACTER: W/A/S/D move, E jump (camera-relative)");
     if (gWorld.box.periodic) ImGui::Checkbox("periodic ghost images", &gViz.ghosts);
     else ImGui::Checkbox("always show domain box", &gViz.showCellAlways);
     ImGui::TextDisabled("click a body to select   yellow=contact  cyan=normal");
@@ -512,12 +682,78 @@ static void buildDebugLines() {
     }
     if (gSelected >= 0 && gSelected < (int)gWorld.bodies.size())
         aabb(v3(gWorld.bodies[gSelected].x), (float)gWorld.bodies[gSelected].boundingRadius() * 1.05f, {1, 1, 1});
+
+    // Level geometry drawn as line work: triangle meshes (wireframe) + convex AABBs.
+    for (const Body& b : gWorld.bodies) {
+        if (b.shape == Shape::Mesh && b.mesh) {
+            const MeshData& md = *b.mesh; Vec3 mc{0.30f, 0.45f, 0.42f};
+            for (size_t t = 0; t < md.tris.size(); ++t) {
+                Vec3 w[3];
+                for (int k = 0; k < 3; ++k) w[k] = v3(b.x + b.q.rotate(md.v((int)t, k)));
+                line(w[0], w[1], mc); line(w[1], w[2], mc); line(w[2], w[0], mc);
+            }
+        } else if (b.shape == Shape::Convex) {
+            aabb(v3(b.x), (float)b.boundingRadius(), {0.5f, 0.6f, 0.4f});
+        }
+    }
+    // Joints: a line between the two anchor points.
+    if (gViz.joints) {
+        Vec3 jc{0.9f, 0.6f, 0.2f};
+        for (const DistanceJoint& j : gWorld.distanceJoints)
+            line(v3(gWorld.bodies[j.a].x + gWorld.bodies[j.a].q.rotate(j.localA)),
+                 v3(gWorld.bodies[j.b].x + gWorld.bodies[j.b].q.rotate(j.localB)), jc);
+        for (const Joint& j : gWorld.joints) {
+            if (j.broken) continue;
+            line(v3(gWorld.bodies[j.a].x + gWorld.bodies[j.a].q.rotate(j.localA)),
+                 v3(gWorld.bodies[j.b].x + gWorld.bodies[j.b].q.rotate(j.localB)), jc);
+        }
+    }
+}
+
+static void sceneTick() {
+    if (gKinBody < gWorld.bodies.size())   // scene 12: oscillate the platform
+        gWorld.bodies[gKinBody].v = {4.0 * std::cos(gSimTime * 0.8), 0, 0};
+}
+
+// WASD capsule character: collide-and-slide against the world (see the engine's
+// CharacterController; done inline here so it can share the viewer's gWorld).
+static void updateChar(double dt) {
+    if (!gChar.active) return;
+    V3 fwd{-std::sin(gAz), 0, -std::cos(gAz)};
+    V3 right{std::cos(gAz), 0, -std::sin(gAz)};
+    V3 wish;
+    if (gKey['w']) wish += fwd;   if (gKey['s']) wish -= fwd;
+    if (gKey['d']) wish += right; if (gKey['a']) wish -= right;
+    double wl = wish.norm(); if (wl > 1e-6) wish = wish * (5.0 / wl);
+    gChar.vel.x = wish.x; gChar.vel.z = wish.z;
+    gChar.vel.y += gWorld.gravity.y * dt;
+    if (gChar.grounded && gKey['e']) { gChar.vel.y = 7.0; gChar.grounded = false; }
+    gChar.pos += gChar.vel * dt;
+    Body cap = makeCapsule(-1, gChar.pos, Q{1, 0, 0, 0}, gChar.r, gChar.hh, 1.0);
+    gChar.grounded = false;
+    for (int it = 0; it < 6; ++it) {
+        double deepest = 0.0; V3 dn;
+        for (const Body& b : gWorld.bodies) {
+            if (b.sensor) continue;
+            Contact ct = detectContact(cap, b, gWorld.box);
+            if (ct.hit && ct.overlap > deepest) { deepest = ct.overlap; dn = ct.normal; }
+        }
+        if (deepest <= 0.01) break;
+        gChar.pos += dn * (deepest - 0.01);
+        if (dn.y > 0.6) { gChar.grounded = true; if (gChar.vel.y < 0) gChar.vel.y = 0; }
+        cap.x = gChar.pos;
+    }
+    gCenter = {(float)gChar.pos.x, (float)gChar.pos.y + 1.0f, (float)gChar.pos.z};
 }
 
 static void display() {
     // step the engine live (unless paused)
     gWorld.captureContacts = gViz.contacts;
-    if (!gPaused) for (int i = 0; i < gStepsPerFrame; ++i) { gWorld.step(); gSimTime += gWorld.dt; }
+    if (!gPaused) {
+        sceneTick();
+        for (int i = 0; i < gStepsPerFrame; ++i) { gWorld.step(); gSimTime += gWorld.dt; }
+        updateChar(gStepsPerFrame * gWorld.dt);
+    }
     pushKE((float)gWorld.totalKinetic());
 
     ImGui_ImplOpenGL3_NewFrame();
@@ -552,15 +788,39 @@ static void display() {
     gSphere.instData.clear(); gSphere.instCount = 0;
     gCyl.instData.clear(); gCyl.instCount = 0;
     gBox.instData.clear(); gBox.instCount = 0;
+
+    // Push one primitive at a world transform. Capsule = cylinder + two cap spheres.
+    auto pushShape = [&](Shape s, const Vec3& p, const Mat4& Rm, float r, float hh,
+                         const Vec3& he, const Vec3& col) {
+        Mat4 T = Mat4::translate(p);
+        if (s == Shape::Sphere) pushInstance(gSphere, T * Rm * Mat4::scale({r, r, r}), col);
+        else if (s == Shape::Box) pushInstance(gBox, T * Rm * Mat4::scale(he), col);
+        else if (s == Shape::Cylinder) pushInstance(gCyl, T * Rm * Mat4::scale({r, hh, r}), col);
+        else if (s == Shape::Capsule) {
+            pushInstance(gCyl, T * Rm * Mat4::scale({r, hh, r}), col);
+            Vec3 up{Rm.m[4], Rm.m[5], Rm.m[6]};   // body +Y in world (Rm column 1)
+            pushInstance(gSphere, Mat4::translate(p + up * hh) * Mat4::scale({r, r, r}), col);
+            pushInstance(gSphere, Mat4::translate(p - up * hh) * Mat4::scale({r, r, r}), col);
+        }
+        // Convex / Plane / Mesh are drawn as line geometry elsewhere.
+    };
     auto emit = [&](const Body& b, const Vec3& shift, const Vec3& col) {
-        Mat4 T = Mat4::translate({(float)b.x.x + shift.x, (float)b.x.y + shift.y, (float)b.x.z + shift.z});
+        Vec3 p{(float)b.x.x + shift.x, (float)b.x.y + shift.y, (float)b.x.z + shift.z};
         Mat4 Rm = Mat4::fromQuat((float)b.q.w, (float)b.q.x, (float)b.q.y, (float)b.q.z);
-        if (b.shape == Shape::Sphere)
-            pushInstance(gSphere, T * Rm * Mat4::scale({(float)b.radius, (float)b.radius, (float)b.radius}), col);
-        else if (b.shape == Shape::Box)
-            pushInstance(gBox, T * Rm * Mat4::scale({(float)b.halfExtents.x, (float)b.halfExtents.y, (float)b.halfExtents.z}), col);
-        else
-            pushInstance(gCyl, T * Rm * Mat4::scale({(float)b.radius, (float)b.halfHeight, (float)b.radius}), col);
+        if (b.shape == Shape::Compound) {
+            for (const ChildShape& ch : b.children) {
+                Vec3 lp{(float)ch.localPos.x, (float)ch.localPos.y, (float)ch.localPos.z};
+                Vec3 wp = p + Vec3{Rm.m[0]*lp.x + Rm.m[4]*lp.y + Rm.m[8]*lp.z,
+                                   Rm.m[1]*lp.x + Rm.m[5]*lp.y + Rm.m[9]*lp.z,
+                                   Rm.m[2]*lp.x + Rm.m[6]*lp.y + Rm.m[10]*lp.z};
+                Mat4 cRm = Rm * Mat4::fromQuat((float)ch.localRot.w, (float)ch.localRot.x, (float)ch.localRot.y, (float)ch.localRot.z);
+                pushShape(ch.shape, wp, cRm, (float)ch.radius, (float)ch.halfHeight,
+                          {(float)ch.halfExtents.x, (float)ch.halfExtents.y, (float)ch.halfExtents.z}, col);
+            }
+        } else {
+            pushShape(b.shape, p, Rm, (float)b.radius, (float)b.halfHeight,
+                      {(float)b.halfExtents.x, (float)b.halfExtents.y, (float)b.halfExtents.z}, col);
+        }
     };
     float edge = (float)gWorld.box.edge();
     for (size_t i = 0; i < gWorld.bodies.size(); ++i) {
@@ -576,6 +836,11 @@ static void display() {
                 if (cc[a] < -h + r) { Vec3 s{0, 0, 0}; (&s.x)[a] = edge; emit(b, s, col * 0.5f); }
             }
         }
+    }
+    if (gChar.active) {   // the WASD character capsule (not a world body)
+        Vec3 cp{(float)gChar.pos.x, (float)gChar.pos.y, (float)gChar.pos.z};
+        pushShape(Shape::Capsule, cp, Mat4::identity(), (float)gChar.r, (float)gChar.hh, {},
+                  gChar.grounded ? Vec3{0.95f, 0.85f, 0.30f} : Vec3{0.95f, 0.55f, 0.30f});
     }
     drawMesh(gSphere, 0); drawMesh(gCyl, 0); drawMesh(gBox, 0);
 
@@ -601,6 +866,7 @@ static void timer(int) { glutPostRedisplay(); glutTimerFunc(16, timer, 0); }
 static void key(unsigned char k, int x, int y) {
     ImGui_ImplGLUT_KeyboardFunc(k, x, y);
     if (ImGui::GetIO().WantCaptureKeyboard) return;
+    gKey[k] = true;                          // for the WASD character
     switch (k) {
         case 27: glutLeaveMainLoop(); break;
         case ' ': gPaused = !gPaused; break;
@@ -614,7 +880,7 @@ static void key(unsigned char k, int x, int y) {
         default: if (k >= '1' && k <= '9') buildScene(k - '0');
     }
 }
-static void keyUp(unsigned char k, int x, int y) { ImGui_ImplGLUT_KeyboardUpFunc(k, x, y); }
+static void keyUp(unsigned char k, int x, int y) { gKey[k] = false; ImGui_ImplGLUT_KeyboardUpFunc(k, x, y); }
 static void special(int k, int x, int y) { ImGui_ImplGLUT_SpecialFunc(k, x, y); }
 static void specialUp(int k, int x, int y) { ImGui_ImplGLUT_SpecialUpFunc(k, x, y); }
 
@@ -678,7 +944,8 @@ int main(int argc, char** argv) {
     glutMouseWheelFunc(wheel);
     glutTimerFunc(16, timer, 0);
 
-    std::printf("NativeEngine Visual Debugger -- live, interactive. Scenes 1..9; click to select a body.\n");
+    std::printf("NativeEngine Visual Debugger -- live, interactive. Scenes 1..15 (10-15: ragdoll, "
+                "terrain, kinematic platform, hinge bridge, compound, WASD character). Click to select.\n");
     glutMainLoop();
 
     ImGui_ImplOpenGL3_Shutdown();

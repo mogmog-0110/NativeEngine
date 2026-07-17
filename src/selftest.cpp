@@ -1097,6 +1097,32 @@ void test_general_joints() {
         check(std::fabs(p.x) > 0.5, "slider: translates along the axis");
         check(std::fabs(p.y) < 0.05 && std::fabs(p.z) < 0.05, "slider: locked perpendicular to the axis");
     }
+    // (f) A CHAIN of hinges (a bridge) must stay planar: the axis-alignment
+    //     constraint has to REDUCE misalignment, not grow it. A sign error in the
+    //     Baumgarte bias twists the whole chain (invisible on a single hinge).
+    {
+        PhysicsWorld pw;
+        pw.setBox(1000.0, false); pw.setTimestep(1.0 / 240.0); pw.setGravity(V3{0, -10, 0});
+        BodyId la = pw.addBox(V3{-5, 6, 0}, Q{1, 0, 0, 0}, V3{1, 1, 2}, 1.0); pw.makeStatic(la);
+        BodyId prev = la;
+        std::vector<BodyId> planks;
+        for (int i = 0; i < 8; ++i) {
+            double x = -4.5 + i * 1.0;
+            BodyId p = pw.addBox(V3{x, 6, 0}, Q{1, 0, 0, 0}, V3{0.5, 0.12, 2}, 1.0);
+            pw.addHingeJoint(prev, p, V3{x - 0.5, 6, 0}, V3{0, 0, 1});
+            planks.push_back(p); prev = p;
+        }
+        BodyId ra = pw.addBox(V3{3, 6, 0}, Q{1, 0, 0, 0}, V3{1, 1, 2}, 1.0); pw.makeStatic(ra);
+        pw.addHingeJoint(prev, ra, V3{2.5, 6, 0}, V3{0, 0, 1});
+        for (int s = 0; s < 1200; ++s) pw.step();
+        double maxTilt = 0.0;
+        for (BodyId p : planks) {
+            V3 lz = pw.orientation(p).rotate(V3{0, 0, 1});   // plank local Z in world
+            double tilt = std::acos(std::min(1.0, std::fabs(lz.z))) * 180.0 / PI;
+            maxTilt = std::max(maxTilt, tilt);
+        }
+        check(maxTilt < 5.0, "hinge chain: a bridge of hinges stays planar (no twisting)");
+    }
 }
 
 void test_plane_and_convex() {

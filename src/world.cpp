@@ -272,7 +272,7 @@ void World::solveJoints(int iterations) {
                 Mat3 Kang = IA + IB;
                 for (const V3& t : {t1, t2}) {
                     V3 wRel = A.w - B.w;
-                    double jv = wRel.dot(t) + alignErr.dot(t) * (beta / dt);
+                    double jv = wRel.dot(t) - alignErr.dot(t) * (beta / dt);   // Baumgarte: reduce misalignment
                     double k = t.dot(Kang * t);
                     if (k > 1e-18) {
                         V3 L = t * (-jv / k);
