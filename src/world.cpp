@@ -27,7 +27,13 @@ struct Constraint {
     double restBias;   // target separating speed from restitution
     double mu;         // combined Coulomb friction for this contact
     double nImp = 0.0, tImp = 0.0;
+    std::uint64_t pairKey = 0;   // warm-start key (body-index pair)
+    int slot = 0;                // contact index within the pair
 };
+
+inline std::uint64_t pairKeyOf(std::size_t i, std::size_t j) {
+    return ((std::uint64_t)i << 32) | (std::uint32_t)j;
+}
 
 // Below this approach speed, restitution is suppressed so resting contacts do
 // not jitter or gain energy.
@@ -316,22 +322,51 @@ void World::wake(Body& b) {
     b.sleepTimer = 0.0;
 }
 
+// Island-based sleeping: a connected group of awake dynamic bodies (linked by
+// contacts or joints) sleeps only when EVERY member has been slow long enough, so
+// a settling stack doesn't sleep one box at a time and re-wake its neighbours.
 void World::updateSleep() {
-    for (Body& b : bodies) {
-        if (!b.dynamic || b.sleeping) continue;
-        if (b.v.norm() < sleepLinVel && b.w.norm() < sleepAngVel) {
-            b.sleepTimer += dt;
-            if (b.sleepTimer >= sleepTime) {
-                b.invMassStore = b.invMass;
-                b.invInertiaStore = b.invInertiaBody;
-                b.invMass = 0.0;
-                b.invInertiaBody = {0, 0, 0};
-                b.v = {}; b.w = {};
-                b.sleeping = true;
-            }
-        } else {
-            b.sleepTimer = 0.0;
-        }
+    const std::size_t n = bodies.size();
+    auto awakeDyn = [&](std::size_t i) { return bodies[i].dynamic && !bodies[i].sleeping && bodies[i].invMass > 0.0; };
+
+    std::vector<std::size_t> parent(n);
+    for (std::size_t i = 0; i < n; ++i) parent[i] = i;
+    auto find = [&](std::size_t x) {
+        while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+        return x;
+    };
+    auto join = [&](std::size_t a, std::size_t b) {
+        if (awakeDyn(a) && awakeDyn(b)) parent[find(a)] = find(b);
+    };
+    for (const auto& pr : islandPairs_) join(pr.first, pr.second);
+    for (const DistanceJoint& j : distanceJoints) join(j.a, j.b);
+    for (const Joint& j : joints) if (!j.broken) join(j.a, j.b);
+
+    // Advance each awake body's slow-timer.
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!awakeDyn(i)) continue;
+        Body& b = bodies[i];
+        if (b.v.norm() < sleepLinVel && b.w.norm() < sleepAngVel) b.sleepTimer += dt;
+        else b.sleepTimer = 0.0;
+    }
+    // An island is ready iff its slowest member's timer has reached sleepTime.
+    std::unordered_map<std::size_t, double> islandMin;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!awakeDyn(i)) continue;
+        std::size_t r = find(i);
+        auto it = islandMin.find(r);
+        if (it == islandMin.end() || bodies[i].sleepTimer < it->second) islandMin[r] = bodies[i].sleepTimer;
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!awakeDyn(i)) continue;
+        if (islandMin[find(i)] < sleepTime) continue;
+        Body& b = bodies[i];
+        b.invMassStore = b.invMass;
+        b.invInertiaStore = b.invInertiaBody;
+        b.invMass = 0.0;
+        b.invInertiaBody = {0, 0, 0};
+        b.v = {}; b.w = {};
+        b.sleeping = true;
     }
 }
 
@@ -469,6 +504,7 @@ void World::collide() {
     // 1. Detect: build a constraint per overlapping pair, in sorted (i<j) order.
     std::vector<Constraint> cons;
     if (captureContacts) debugContacts.clear();
+    islandPairs_.clear();
     for (const auto& pr : broadphasePairs()) {
         {
             Body& a = bodies[pr.first];
@@ -493,6 +529,10 @@ void World::collide() {
                 if (a.sleeping && b.sleeping) continue;
             }
 
+            if (a.invMass > 0.0 && b.invMass > 0.0) islandPairs_.push_back({i, j});   // for island sleeping
+
+            const std::uint64_t key = pairKeyOf(i, j);
+            int slot = 0;
             for (const Contact& c : contacts) {
                 Constraint k;
                 k.i = i; k.j = j; k.n = c.normal; k.overlap = c.overlap; k.mu = mu;
@@ -501,9 +541,28 @@ void World::collide() {
                 V3 vc = (a.v + a.w.cross(k.rA)) - (b.v + b.w.cross(k.rB));
                 double vn = vc.dot(k.n);
                 k.restBias = (vn < -kRestitutionSlop) ? -e * vn : 0.0;
+                k.pairKey = key; k.slot = slot++;
+                if (warmStart) {                          // seed from last step's impulse
+                    auto it = warmCache_.find(key);
+                    if (it != warmCache_.end() && k.slot < (int)it->second.size())
+                        k.nImp = it->second[k.slot];
+                }
                 cons.push_back(k);
                 if (captureContacts) debugContacts.push_back({c.point, c.normal, c.overlap, i, j});
             }
+        }
+    }
+
+    // Warm start: apply each contact's seeded normal impulse up front, so the
+    // iterations begin near last step's solution (stable, fast-settling stacks).
+    if (warmStart) {
+        for (Constraint& k : cons) {
+            if (k.nImp == 0.0) continue;
+            Body& a = bodies[k.i];
+            Body& b = bodies[k.j];
+            V3 J = k.n * k.nImp;
+            a.v += J * a.invMass; a.w += a.applyInvInertiaWorld(k.rA.cross(J));
+            b.v -= J * b.invMass; b.w -= b.applyInvInertiaWorld(k.rB.cross(J));
         }
     }
 
@@ -554,6 +613,16 @@ void World::collide() {
     // 3. Positional correction (geometric, energy-neutral).
     for (const Constraint& k : cons)
         correctPenetration(bodies[k.i], bodies[k.j], k.n, k.overlap, contactBeta);
+
+    // Store this step's converged normal impulses for next step's warm start.
+    if (warmStart) {
+        warmCache_.clear();
+        for (const Constraint& k : cons) {
+            std::vector<double>& slots = warmCache_[k.pairKey];
+            if ((int)slots.size() <= k.slot) slots.resize(k.slot + 1, 0.0);
+            slots[k.slot] = k.nImp;
+        }
+    }
 }
 
 // Reflective walls at +-half, shape-aware for ALL shapes (a sphere-only version

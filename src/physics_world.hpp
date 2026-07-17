@@ -339,6 +339,12 @@ public:
     struct OverlapHit { BodyId body = kInvalidBody; std::uint64_t userData = 0; V3 normal; double depth = 0.0; };
     std::vector<OverlapHit> overlapContacts(const Body& query, std::uint32_t mask = 0xFFFFFFFFu) const;
 
+    // --- snapshot (rollback / checkpoint) ---
+    // Serialize the dynamic state (pose, velocity, sleep, mass, joint-broken) to a
+    // blob; loadState restores it into the SAME topology (same bodies, same order).
+    std::vector<char> saveState() const;
+    bool loadState(const std::vector<char>& data);
+
     std::size_t bodyCount() const { return w_.bodies.size(); }
     World& world() { return w_; }   // escape hatch for advanced use
 

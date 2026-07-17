@@ -1263,6 +1263,43 @@ void test_compound() {
     check(std::fabs(p.x) < 1.0 && std::fabs(p.z) < 1.0, "compound: does not tip or drift");
 }
 
+void test_solver_scale() {
+    // (a) Warm-started tall stack settles low and at rest.
+    {
+        PhysicsWorld pw;
+        pw.setBox(1000.0, false); pw.setTimestep(1.0 / 240.0); pw.setGravity(V3{0, -10, 0});
+        pw.setRestitution(0.0); pw.setFriction(0.6);
+        BodyId floor = pw.addBox(V3{0, -1, 0}, Q{1, 0, 0, 0}, V3{20, 1, 20}, 1.0); pw.makeStatic(floor);
+        std::vector<BodyId> boxes;
+        for (int i = 0; i < 6; ++i)
+            boxes.push_back(pw.addBox(V3{0, 1.0 + i * 2.0, 0}, Q{1, 0, 0, 0}, V3{1, 1, 1}, 1.0));
+        for (int s = 0; s < 2000; ++s) pw.step();
+        check(pw.position(boxes[0]).y < 1.2, "warm start: bottom box rests near the floor");
+        check(pw.position(boxes[5]).y < 11.5, "warm start: tall stack does not sink");
+        check(pw.velocity(boxes[5]).norm() < 0.2, "warm start: stack is at rest");
+    }
+    // (b) Snapshot round-trip: restore to the save point and reproduce the run.
+    {
+        PhysicsWorld pw;
+        pw.setBox(1000.0, false); pw.setTimestep(1.0 / 240.0); pw.setGravity(V3{0, -10, 0});
+        pw.setFriction(0.5);
+        pw.world().warmStart = false;   // remove hidden solver state for exact replay
+        BodyId floor = pw.addBox(V3{0, -1, 0}, Q{1, 0, 0, 0}, V3{20, 1, 20}, 1.0); pw.makeStatic(floor);
+        std::vector<BodyId> ids;
+        for (int i = 0; i < 5; ++i) ids.push_back(pw.addSphere(V3{0.1 * i, 1.0 + i * 1.1, 0}, 0.5, 1.0));
+        for (int s = 0; s < 200; ++s) pw.step();
+        std::vector<char> snap = pw.saveState();
+        V3 atSave = pw.position(ids[3]);
+        for (int s = 0; s < 120; ++s) pw.step();
+        V3 after = pw.position(ids[3]);
+
+        check(pw.loadState(snap), "snapshot: loadState succeeds");
+        check(closeV(pw.position(ids[3]), atSave, 1e-12), "snapshot: state restored exactly to the save point");
+        for (int s = 0; s < 120; ++s) pw.step();
+        check(closeV(pw.position(ids[3]), after, 1e-9), "snapshot: replay from a snapshot reproduces the trajectory");
+    }
+}
+
 }  // namespace
 
 int runSelftest() {
@@ -1307,6 +1344,7 @@ int runSelftest() {
     test_integration_api();
     test_mesh();
     test_compound();
+    test_solver_scale();
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

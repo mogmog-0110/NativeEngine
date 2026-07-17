@@ -1,11 +1,67 @@
 #include "physics_world.hpp"
 
 #include <algorithm>
+#include <cstring>
 
 #include "detect.hpp"
 #include "queries.hpp"
 
 namespace ne {
+
+namespace {
+template <class T> void put(std::vector<char>& b, const T& v) {
+    const char* p = reinterpret_cast<const char*>(&v);
+    b.insert(b.end(), p, p + sizeof(T));
+}
+template <class T> bool get(const std::vector<char>& b, std::size_t& off, T& v) {
+    if (off + sizeof(T) > b.size()) return false;
+    std::memcpy(&v, b.data() + off, sizeof(T));
+    off += sizeof(T);
+    return true;
+}
+constexpr std::uint32_t kSnapMagic = 0x4E45'5331;   // "NES1"
+}  // namespace
+
+std::vector<char> PhysicsWorld::saveState() const {
+    std::vector<char> b;
+    put(b, kSnapMagic);
+    put(b, (std::uint32_t)w_.bodies.size());
+    for (const Body& bd : w_.bodies) {
+        put(b, bd.x); put(b, bd.q); put(b, bd.v); put(b, bd.w);
+        put(b, bd.invMass); put(b, bd.invInertiaBody);
+        put(b, bd.invMassStore); put(b, bd.invInertiaStore);
+        put(b, bd.sleepTimer);
+        put(b, (std::uint8_t)(bd.sleeping ? 1 : 0));
+    }
+    put(b, (std::uint32_t)gjoints_.size());
+    for (const Joint& j : gjoints_) put(b, (std::uint8_t)(j.broken ? 1 : 0));
+    return b;
+}
+
+bool PhysicsWorld::loadState(const std::vector<char>& data) {
+    std::size_t off = 0;
+    std::uint32_t magic = 0, n = 0;
+    if (!get(data, off, magic) || magic != kSnapMagic) return false;
+    if (!get(data, off, n) || n != w_.bodies.size()) return false;
+    for (Body& bd : w_.bodies) {
+        std::uint8_t sleeping = 0;
+        if (!get(data, off, bd.x) || !get(data, off, bd.q) || !get(data, off, bd.v) ||
+            !get(data, off, bd.w) || !get(data, off, bd.invMass) || !get(data, off, bd.invInertiaBody) ||
+            !get(data, off, bd.invMassStore) || !get(data, off, bd.invInertiaStore) ||
+            !get(data, off, bd.sleepTimer) || !get(data, off, sleeping))
+            return false;
+        bd.sleeping = (sleeping != 0);
+    }
+    std::uint32_t jn = 0;
+    if (!get(data, off, jn) || jn != gjoints_.size()) return false;
+    for (Joint& j : gjoints_) {
+        std::uint8_t broken = 0;
+        if (!get(data, off, broken)) return false;
+        j.broken = (broken != 0);
+    }
+    w_.resetWarmCache();   // impulse cache is transient; rebuilds next step
+    return true;
+}
 
 namespace {
 bool layerAllowed(std::uint32_t mask, const Body& b) { return (mask & (1u << (b.layer & 31u))) != 0; }

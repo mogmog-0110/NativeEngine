@@ -2,6 +2,8 @@
 #ifndef NATIVEENGINE_WORLD_HPP
 #define NATIVEENGINE_WORLD_HPP
 
+#include <cstdint>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -105,6 +107,11 @@ public:
     // Default false keeps the reflective-box behaviour the science runs rely on.
     bool openBoundary = false;
 
+    // Warm starting: seed each contact's normal impulse from the previous step's
+    // solution (cached by body-index pair + contact slot) so stacks converge in
+    // far fewer iterations and rest without sinking. Deterministic.
+    bool warmStart = true;
+
     // Broadphase: a PBC-aware uniform grid replaces the O(N^2) pair scan for
     // large scenes. Candidate pairs are sorted to (i<j) order so the constraint
     // list -- and thus the result -- is bit-identical to the brute-force scan.
@@ -123,6 +130,7 @@ public:
 
     void step();
     static void wake(Body& b);
+    void resetWarmCache() { warmCache_.clear(); }   // after a state load / teleport
 
     // Aggregate diagnostics used by the physics selftest.
     V3 totalLinearMomentum() const;
@@ -139,6 +147,8 @@ private:
     std::vector<std::pair<std::size_t, std::size_t>> broadphasePairs() const;
     void updateSleep();    // put settled bodies to sleep
     void ccdPass();        // sweep fast CCD bodies, stop them before tunneling
+    std::unordered_map<std::uint64_t, std::vector<double>> warmCache_;  // pairKey -> nImp per slot
+    std::vector<std::pair<std::size_t, std::size_t>> islandPairs_;      // dyn-dyn contacts this step
     void applyWalls();     // reflective boundary
     void wrapPositions();  // periodic boundary
 };
