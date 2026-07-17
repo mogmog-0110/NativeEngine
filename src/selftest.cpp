@@ -6,6 +6,7 @@
 #include "world.hpp"
 #include "contact.hpp"
 #include "narrowphase.hpp"
+#include "gjk.hpp"
 
 namespace ne {
 namespace {
@@ -310,6 +311,46 @@ void test_sphere_cylinder_dynamics() {
     check(w.bodies[0].w.norm() > 1e-4, "sphere-cyl dynamics: cylinder acquires spin");
 }
 
+// ---------------------------------------------------------------------------
+// 11. GJK overlap: support functions + simplex evolution. Cross-checked against
+//     the independent analytic sphere-cylinder narrow phase, plus a periodic
+//     across-boundary overlap.
+// ---------------------------------------------------------------------------
+void test_gjk_overlap() {
+    Box box; box.periodic = false; box.half = 100.0;
+    Body cyl = makeCylinder(0, V3{0, 0, 0}, Q{1, 0, 0, 0}, 1.0, 4.0, 1.0);
+
+    Body cB = makeCylinder(1, V3{1.5, 0, 0}, Q{1, 0, 0, 0}, 1.0, 4.0, 1.0);
+    check(gjkOverlap(cyl, cB, V3{0, 0, 0}), "gjk: parallel cylinders 1.5 apart overlap");
+    Body cC = makeCylinder(2, V3{3.0, 0, 0}, Q{1, 0, 0, 0}, 1.0, 4.0, 1.0);
+    check(!gjkOverlap(cyl, cC, V3{0, 0, 0}), "gjk: parallel cylinders 3.0 apart separated");
+
+    // Cross-check GJK against the analytic sphere-cylinder hit test.
+    struct { V3 p; bool hit; const char* what; } cases[] = {
+        {{1.5, 0, 0}, true, "side"}, {{0, 2.5, 0}, true, "cap"},
+        {{1.5, 2.5, 0}, true, "rim"}, {{0, 4, 0}, false, "far"},
+        {{2.1, 0, 0}, false, "just outside side"},
+    };
+    bool agree = true;
+    for (auto& c : cases) {
+        Body s = makeSphere(9, c.p, 1.0, 1.0);
+        bool g = gjkOverlap(s, cyl, V3{0, 0, 0});
+        bool a = sphereVsCylinder(s, cyl, box).hit;
+        if (g != c.hit || a != c.hit) agree = false;
+    }
+    check(agree, "gjk: agrees with analytic sphere-cylinder on side/cap/rim/far");
+
+    // Periodic: two cylinders near opposite faces overlap through the boundary.
+    Box pbox; pbox.periodic = true; pbox.half = 5.0;   // edge 10
+    Body pA = makeCylinder(0, V3{4.5, 0, 0}, Q{1, 0, 0, 0}, 1.0, 4.0, 1.0);
+    Body pB = makeCylinder(1, V3{-4.5, 0, 0}, Q{1, 0, 0, 0}, 1.0, 4.0, 1.0);
+    check(gjkOverlap(pA, pB, minImageShift(pA, pB, pbox)),
+          "gjk: cylinders overlap across the periodic boundary");
+    Box rbox; rbox.periodic = false; rbox.half = 5.0;
+    check(!gjkOverlap(pA, pB, minImageShift(pA, pB, rbox)),
+          "gjk: same pair does NOT overlap without PBC (9 apart)");
+}
+
 }  // namespace
 
 int runSelftest() {
@@ -324,6 +365,7 @@ int runSelftest() {
     test_offcentre_impulse();
     test_sphere_cylinder_geometry();
     test_sphere_cylinder_dynamics();
+    test_gjk_overlap();
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
