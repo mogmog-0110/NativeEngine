@@ -258,6 +258,7 @@ void World::collide() {
             const size_t i = pr.first, j = pr.second;
             if (a.invMass + b.invMass <= 0.0) continue;
             if (!layersCollide(a, b)) continue;         // collision filtering
+            if (a.sensor || b.sensor) continue;         // triggers: no physical response
             Contact c = detectContact(a, b, box);
             if (!c.hit) continue;
 

@@ -4,7 +4,9 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "world.hpp"
@@ -122,7 +124,7 @@ public:
             w_.distanceJoints.push_back(dj);
         }
         w_.step();
-        if (onContact_) emitContacts();
+        if (wantsEvents()) processContacts();
     }
 
     // --- accessors ---
@@ -170,10 +172,21 @@ public:
     }
     void setUserData(BodyId h, std::uint64_t data) { if (Body* b = body(h)) b->userData = data; }
     std::uint64_t userData(BodyId h) const { const Body* b = body(h); return b ? b->userData : 0; }
+    // A sensor detects overlap but has no physical response, and reports through
+    // the trigger enter/stay/exit callbacks instead of the contact ones.
+    void setSensor(BodyId h, bool on) { if (Body* b = body(h)) b->sensor = on; }
 
-    void setContactCallback(std::function<void(const ContactInfo&)> cb) {
-        onContact_ = std::move(cb);
-    }
+    // --- events ---
+    // Legacy: fires once per solid overlapping pair every step.
+    void setContactCallback(std::function<void(const ContactInfo&)> cb) { onContact_ = std::move(cb); }
+    // Transitions (keyed by body pair across frames): the events gameplay wants.
+    using ContactCb = std::function<void(const ContactInfo&)>;
+    void setContactBeginCallback(ContactCb cb) { onBegin_ = std::move(cb); }
+    void setContactStayCallback(ContactCb cb) { onStay_ = std::move(cb); }
+    void setContactEndCallback(ContactCb cb) { onEnd_ = std::move(cb); }
+    void setTriggerEnterCallback(ContactCb cb) { onTrigEnter_ = std::move(cb); }
+    void setTriggerStayCallback(ContactCb cb) { onTrigStay_ = std::move(cb); }
+    void setTriggerExitCallback(ContactCb cb) { onTrigExit_ = std::move(cb); }
 
     std::size_t bodyCount() const { return w_.bodies.size(); }
     World& world() { return w_; }   // escape hatch for advanced use
@@ -184,6 +197,15 @@ private:
     std::unordered_map<BodyId, std::size_t> slot_;  // handle -> index
     BodyId next_ = 1;                               // 0 reserved for "invalid"
     std::function<void(const ContactInfo&)> onContact_;
+    ContactCb onBegin_, onStay_, onEnd_, onTrigEnter_, onTrigStay_, onTrigExit_;
+    // Overlapping pairs from the previous step (normalized handle key -> info),
+    // split solid vs trigger, so we can emit begin/stay/end and enter/stay/exit.
+    using PairKey = std::pair<BodyId, BodyId>;
+    std::map<PairKey, ContactInfo> prevContacts_, prevTriggers_;
+    bool wantsEvents() const {
+        return onContact_ || onBegin_ || onStay_ || onEnd_ ||
+               onTrigEnter_ || onTrigStay_ || onTrigExit_;
+    }
 
     struct FacadeJoint {
         BodyId a, b;
@@ -208,9 +230,10 @@ private:
         return (it != slot_.end()) ? &w_.bodies[it->second] : nullptr;
     }
 
-    // Report overlapping pairs this step (positions are post-step). Simple and
-    // deterministic; a persistent-manifold version comes with warm starting.
-    void emitContacts();
+    // Diff this step's overlapping pairs against the previous step to emit the
+    // legacy per-step callback plus contact begin/stay/end and trigger
+    // enter/stay/exit. Positions are post-step.
+    void processContacts();
 };
 
 }  // namespace ne

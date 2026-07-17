@@ -79,6 +79,10 @@ struct Body {
     // Distinct from a static body (v=0, pose fixed) and never sleeps.
     bool kinematic = false;
 
+    // Sensor / trigger: detected for overlap events but produces NO physical
+    // response (the solver skips any pair touching a sensor). A trigger volume.
+    bool sensor = false;
+
     bool isSphere() const { return shape == Shape::Sphere; }
 
     // Radius of a bounding sphere about the centre (for broadphase).

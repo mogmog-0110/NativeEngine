@@ -905,6 +905,59 @@ void test_kinematic() {
     check(w.bodies[1].x.x > 1.0, "kinematic: pushes the dynamic body along");
 }
 
+void test_contact_events() {
+    // (a) resting ball: one begin when it lands, many stays, no end.
+    {
+        PhysicsWorld pw;
+        pw.setBox(100.0, false); pw.setTimestep(1.0 / 240.0);
+        pw.setGravity(V3{0, -10, 0}); pw.setRestitution(0.0); pw.setFriction(0.5);
+        BodyId floor = pw.addBox(V3{0, -1, 0}, Q{1, 0, 0, 0}, V3{10, 1, 10}, 1.0);
+        pw.makeStatic(floor);
+        pw.addSphere(V3{0, 3, 0}, 0.5, 1.0);
+        int begins = 0, stays = 0, ends = 0;
+        pw.setContactBeginCallback([&](const ContactInfo&) { ++begins; });
+        pw.setContactStayCallback([&](const ContactInfo&) { ++stays; });
+        pw.setContactEndCallback([&](const ContactInfo&) { ++ends; });
+        for (int s = 0; s < 500; ++s) pw.step();
+        check(begins == 1, "contact events: begin fires once when the ball lands");
+        check(stays > 10, "contact events: stay fires while resting");
+        check(ends == 0, "contact events: no end while still resting");
+    }
+    // (b) a clean bounce fires exactly one begin and one end.
+    {
+        PhysicsWorld pw;
+        pw.setBox(100.0, false); pw.setTimestep(1.0 / 240.0); pw.setRestitution(1.0);
+        BodyId a = pw.addSphere(V3{-2, 0, 0}, 0.5, 1.0);
+        BodyId b = pw.addSphere(V3{2, 0, 0}, 0.5, 1.0);
+        pw.setVelocity(a, V3{2, 0, 0}); pw.setVelocity(b, V3{-2, 0, 0});
+        int begins = 0, ends = 0;
+        pw.setContactBeginCallback([&](const ContactInfo&) { ++begins; });
+        pw.setContactEndCallback([&](const ContactInfo&) { ++ends; });
+        for (int s = 0; s < 400; ++s) pw.step();
+        check(begins == 1, "contact events: begin once on the bounce");
+        check(ends == 1, "contact events: end once after separation");
+    }
+}
+
+void test_triggers() {
+    PhysicsWorld pw;
+    pw.setBox(100.0, false); pw.setTimestep(1.0 / 240.0);
+    BodyId trig = pw.addBox(V3{0, 0, 0}, Q{1, 0, 0, 0}, V3{1, 1, 1}, 1.0);
+    pw.makeStatic(trig); pw.setSensor(trig, true);
+    BodyId ball = pw.addSphere(V3{-5, 0, 0}, 0.5, 1.0);
+    pw.setVelocity(ball, V3{5, 0, 0});
+    int enter = 0, stay = 0, exit = 0;
+    pw.setTriggerEnterCallback([&](const ContactInfo&) { ++enter; });
+    pw.setTriggerStayCallback([&](const ContactInfo&) { ++stay; });
+    pw.setTriggerExitCallback([&](const ContactInfo&) { ++exit; });
+    for (int s = 0; s < 400; ++s) pw.step();
+    check(enter == 1, "trigger: enter fires once");
+    check(exit == 1, "trigger: exit fires once");
+    check(stay >= 1, "trigger: stay fires while inside");
+    check(close(pw.velocity(ball).x, 5.0, 1e-9), "trigger: no physical response (passes through)");
+    check(pw.position(ball).x > 1.5, "trigger: ball continued past the sensor");
+}
+
 }  // namespace
 
 int runSelftest() {
@@ -938,6 +991,8 @@ int runSelftest() {
     test_collision_layers();
     test_userdata();
     test_kinematic();
+    test_contact_events();
+    test_triggers();
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
