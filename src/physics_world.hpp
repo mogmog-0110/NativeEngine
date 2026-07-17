@@ -122,6 +122,34 @@ public:
         joints_.push_back({a, b, localA, localB, rest, stiffness, damping});
     }
 
+    // General joints: anchors/axes given in WORLD space at creation (converted to
+    // each body's local frame). Returns a JointId for later configuration/queries.
+    using JointId = std::uint32_t;
+    JointId addBallJoint(BodyId a, BodyId b, const V3& worldAnchor) {
+        return addGeneralJoint(JointType::Ball, a, b, worldAnchor, V3{0, 1, 0});
+    }
+    JointId addHingeJoint(BodyId a, BodyId b, const V3& worldAnchor, const V3& worldAxis) {
+        return addGeneralJoint(JointType::Hinge, a, b, worldAnchor, worldAxis);
+    }
+    JointId addSliderJoint(BodyId a, BodyId b, const V3& worldAnchor, const V3& worldAxis) {
+        return addGeneralJoint(JointType::Slider, a, b, worldAnchor, worldAxis);
+    }
+    JointId addFixedJoint(BodyId a, BodyId b) {
+        const Body* ba = body(a); const Body* bb = body(b);
+        V3 anchor = (ba && bb) ? (ba->x + bb->x) * 0.5 : V3{};
+        return addGeneralJoint(JointType::Fixed, a, b, anchor, V3{0, 1, 0});
+    }
+    void setJointMotor(JointId id, double speed, double maxImpulse) {
+        if (id < gjoints_.size()) { auto& j = gjoints_[id]; j.useMotor = true; j.motorSpeed = speed; j.maxMotorImpulse = maxImpulse; }
+    }
+    void setJointLimit(JointId id, double lower, double upper) {
+        if (id < gjoints_.size()) { auto& j = gjoints_[id]; j.useLimit = true; j.lower = lower; j.upper = upper; }
+    }
+    void setJointBreakable(JointId id, double breakImpulse) {
+        if (id < gjoints_.size()) { auto& j = gjoints_[id]; j.breakable = true; j.breakImpulse = breakImpulse; }
+    }
+    bool jointBroken(JointId id) const { return id < gjoints_.size() && gjoints_[id].broken; }
+
     // --- stepping ---
     void step() {
         // Resolve handle-based joints to current slot indices (indices move on
@@ -136,7 +164,21 @@ public:
             dj.rest = fj.rest; dj.stiffness = fj.stiffness; dj.damping = fj.damping;
             w_.distanceJoints.push_back(dj);
         }
+        // Rebuild general joints with current slot indices; drop joints whose
+        // bodies were removed. Preserve the persistent runtime state (broken).
+        w_.joints.clear();
+        jointMap_.clear();
+        for (std::size_t gi = 0; gi < gjoints_.size(); ++gi) {
+            Joint jj = gjoints_[gi];   // a/b currently hold HANDLES
+            auto ia = slot_.find((BodyId)jj.a), ib = slot_.find((BodyId)jj.b);
+            if (ia == slot_.end() || ib == slot_.end()) continue;
+            jj.a = ia->second; jj.b = ib->second;
+            w_.joints.push_back(jj);
+            jointMap_.push_back(gi);
+        }
         w_.step();
+        for (std::size_t k = 0; k < w_.joints.size(); ++k)
+            gjoints_[jointMap_[k]].broken = w_.joints[k].broken;   // persist break state
         if (wantsEvents()) processContacts();
     }
 
@@ -242,6 +284,28 @@ private:
         double rest, stiffness, damping;
     };
     std::vector<FacadeJoint> joints_;
+
+    // General joints stored with body HANDLES in a/b; rebuilt to indices per step.
+    std::vector<Joint> gjoints_;
+    std::vector<std::size_t> jointMap_;   // w_.joints index -> gjoints_ index
+
+    JointId addGeneralJoint(JointType type, BodyId a, BodyId b,
+                            const V3& worldAnchor, const V3& worldAxis) {
+        const Body* ba = body(a); const Body* bb = body(b);
+        Joint j;
+        j.type = type;
+        j.a = a; j.b = b;   // handles (resolved to indices each step)
+        if (ba && bb) {
+            j.localA = ba->q.inverseRotate(worldAnchor - ba->x);
+            j.localB = bb->q.inverseRotate(worldAnchor - bb->x);
+            V3 ax = worldAxis.normalized();
+            j.axisA = ba->q.inverseRotate(ax);
+            j.axisB = bb->q.inverseRotate(ax);
+            j.refRel = ba->q * bb->q.conjugate();   // lock current relative orientation
+        }
+        gjoints_.push_back(j);
+        return (JointId)(gjoints_.size() - 1);
+    }
 
     BodyId add(Body b) {
         BodyId h = next_++;

@@ -1031,6 +1031,73 @@ void test_queries() {
     check(close(sc.distance, 8.0, 1e-6), "sphereCast: TOI accounts for the swept radius");
 }
 
+void test_general_joints() {
+    // (a) Fixed joint: a body held rigidly beside a static anchor stays put.
+    {
+        PhysicsWorld pw;
+        pw.setBox(1000.0, false); pw.setTimestep(1.0 / 240.0); pw.setGravity(V3{0, -10, 0});
+        BodyId anchor = pw.addBox(V3{0, 5, 0}, Q{1, 0, 0, 0}, V3{0.5, 0.5, 0.5}, 1.0);
+        pw.makeStatic(anchor);
+        BodyId body = pw.addBox(V3{1, 5, 0}, Q{1, 0, 0, 0}, V3{0.5, 0.5, 0.5}, 1.0);
+        pw.addFixedJoint(anchor, body);
+        for (int s = 0; s < 600; ++s) pw.step();
+        V3 p = pw.position(body);
+        check(close(p.x, 1.0, 0.08) && close(p.y, 5.0, 0.15) && close(p.z, 0.0, 0.08),
+              "fixed joint: holds the relative pose under gravity");
+    }
+    // (b) Ball joint: a bob hangs below a static anchor, pinned at the anchor.
+    {
+        PhysicsWorld pw;
+        pw.setBox(1000.0, false); pw.setTimestep(1.0 / 240.0); pw.setGravity(V3{0, -10, 0});
+        BodyId anchor = pw.addSphere(V3{0, 5, 0}, 0.2, 1.0); pw.makeStatic(anchor);
+        BodyId bob = pw.addSphere(V3{0, 3, 0}, 0.5, 1.0);
+        pw.addBallJoint(anchor, bob, V3{0, 5, 0});
+        for (int s = 0; s < 800; ++s) pw.step();
+        V3 p = pw.position(bob);
+        check(close((p - V3{0, 5, 0}).norm(), 2.0, 0.05), "ball joint: anchor distance preserved");
+        check(p.y < 5.0, "ball joint: hangs below the anchor");
+    }
+    // (c) Hinge with motor: drives rotation about its axis only.
+    {
+        PhysicsWorld pw;
+        pw.setBox(1000.0, false); pw.setTimestep(1.0 / 240.0);
+        BodyId anchor = pw.addBox(V3{0, 0, 0}, Q{1, 0, 0, 0}, V3{0.2, 0.2, 0.2}, 1.0);
+        pw.makeStatic(anchor);
+        BodyId arm = pw.addBox(V3{1, 0, 0}, Q{1, 0, 0, 0}, V3{1, 0.1, 0.1}, 1.0);
+        PhysicsWorld::JointId h = pw.addHingeJoint(anchor, arm, V3{0, 0, 0}, V3{0, 1, 0});
+        pw.setJointMotor(h, 2.0, 200.0);
+        for (int s = 0; s < 240; ++s) pw.step();
+        check(std::fabs(pw.angularVelocity(arm).y) > 1.0, "hinge motor: drives rotation about the axis");
+        check(std::fabs(pw.position(arm).z) > 0.2, "hinge motor: arm swept around the axis");
+    }
+    // (d) Breakable: enough load severs the joint and the body falls.
+    {
+        PhysicsWorld pw;
+        pw.setBox(1000.0, false); pw.setTimestep(1.0 / 240.0); pw.setGravity(V3{0, -30, 0});
+        BodyId anchor = pw.addSphere(V3{0, 5, 0}, 0.2, 1.0); pw.makeStatic(anchor);
+        BodyId heavy = pw.addBox(V3{0, 3, 0}, Q{1, 0, 0, 0}, V3{1, 1, 1}, 50.0);
+        PhysicsWorld::JointId j = pw.addBallJoint(anchor, heavy, V3{0, 5, 0});
+        pw.setJointBreakable(j, 5.0);
+        for (int s = 0; s < 300; ++s) pw.step();
+        check(pw.jointBroken(j), "breakable joint: breaks under heavy load");
+        check(pw.position(heavy).y < 2.0, "breakable joint: body falls after breaking");
+    }
+    // (e) Slider: free to translate along the axis, locked perpendicular.
+    {
+        PhysicsWorld pw;
+        pw.setBox(1000.0, false); pw.setTimestep(1.0 / 240.0);
+        BodyId anchor = pw.addBox(V3{0, 0, 0}, Q{1, 0, 0, 0}, V3{0.2, 0.2, 0.2}, 1.0);
+        pw.makeStatic(anchor);
+        BodyId slider = pw.addBox(V3{0, 0, 0}, Q{1, 0, 0, 0}, V3{0.5, 0.5, 0.5}, 1.0);
+        pw.addSliderJoint(anchor, slider, V3{0, 0, 0}, V3{1, 0, 0});   // slide along X
+        pw.setVelocity(slider, V3{2, 3, 1});                          // pushed every way
+        for (int s = 0; s < 240; ++s) pw.step();
+        V3 p = pw.position(slider);
+        check(std::fabs(p.x) > 0.5, "slider: translates along the axis");
+        check(std::fabs(p.y) < 0.05 && std::fabs(p.z) < 0.05, "slider: locked perpendicular to the axis");
+    }
+}
+
 }  // namespace
 
 int runSelftest() {
@@ -1068,6 +1135,7 @@ int runSelftest() {
     test_triggers();
     test_capsule();
     test_queries();
+    test_general_joints();
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

@@ -23,6 +23,34 @@ struct DistanceJoint {
     double damping = 0.0;
 };
 
+// A general bilateral joint solved by sequential impulse. All types pin the two
+// local anchor points together (the ball-socket / point constraint); Hinge and
+// Fixed add angular constraints on top; Slider frees one translation axis instead.
+enum class JointType { Ball, Hinge, Fixed, Slider };
+
+struct Joint {
+    JointType type = JointType::Ball;
+    std::size_t a = 0, b = 0;
+    V3 localA, localB;               // anchor point in each body frame
+    V3 axisA{0, 1, 0}, axisB{0, 1, 0};   // hinge / slider axis in each body frame
+    Q  refRel{1, 0, 0, 0};           // reference qA * qB^-1 (captured at creation)
+
+    bool useMotor = false;
+    double motorSpeed = 0.0;         // target relative rate about the axis
+    double maxMotorImpulse = 0.0;    // clamp
+
+    bool useLimit = false;
+    double lower = 0.0, upper = 0.0; // hinge: angle (rad); slider: distance
+
+    bool breakable = false;
+    double breakImpulse = 0.0;
+
+    // runtime
+    bool broken = false;
+    double appliedImpulse = 0.0;     // accumulated this step (break test)
+    double motorAcc = 0.0;           // motor impulse accumulator (per step)
+};
+
 // A resolved contact point, captured for debug visualization (opt-in). point and
 // normal are in world space; normal points from body j toward body i.
 struct ContactViz {
@@ -85,6 +113,7 @@ public:
 
     std::vector<Body> bodies;
     std::vector<DistanceJoint> distanceJoints;
+    std::vector<Joint> joints;
 
     // Debug: when captureContacts is set, collide() records each resolved contact
     // point into debugContacts (cleared each step). Off by default -- zero cost to
@@ -105,6 +134,7 @@ private:
     void collide();        // all shape pairs
     void applyJointForces();      // spring joints
     void solveRigidJoints(int iterations);   // bilateral distance constraints
+    void solveJoints(int iterations);        // ball / hinge / fixed / slider
     // Candidate pairs (sorted, i<j) from the broadphase.
     std::vector<std::pair<std::size_t, std::size_t>> broadphasePairs() const;
     void updateSleep();    // put settled bodies to sleep

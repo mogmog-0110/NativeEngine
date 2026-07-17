@@ -49,6 +49,7 @@ void World::step() {
     integrate();
     collide();
     solveRigidJoints(8);    // bilateral distance constraints
+    solveJoints(8);         // ball / hinge / fixed / slider
     if (box.periodic)
         wrapPositions();
     else if (!openBoundary)
@@ -105,6 +106,124 @@ void World::solveRigidJoints(int iterations) {
             b.v -= J * b.invMass; b.w -= b.applyInvInertiaWorld(rB.cross(J));
         }
     }
+}
+
+namespace {
+V3 perpendicular(const V3& v) {
+    V3 a = std::fabs(v.x) < 0.9 ? V3{1, 0, 0} : V3{0, 1, 0};
+    return v.cross(a).normalized();
+}
+double clampd(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
+}  // namespace
+
+// General joints: sequential impulse. Every type first solves the point (ball)
+// constraint pinning the anchors; Hinge/Fixed then add angular constraints and,
+// for Hinge, an optional motor and angle limit; Slider frees one axis.
+void World::solveJoints(int iterations) {
+    const double beta = 0.2;
+    for (Joint& j : joints) { j.appliedImpulse = 0.0; j.motorAcc = 0.0; }
+
+    for (int it = 0; it < iterations; ++it) {
+        for (Joint& j : joints) {
+            if (j.broken) continue;
+            Body& A = bodies[j.a];
+            Body& B = bodies[j.b];
+            const Mat3 IA = A.invInertiaWorld(), IB = B.invInertiaWorld();
+
+            // Slider frees the axis translation; the others pin the point fully.
+            V3 rA = A.q.rotate(j.localA), rB = B.q.rotate(j.localB);
+            V3 posErr = box.minImage((A.x + rA) - (B.x + rB));
+            V3 vRel = (A.v + A.w.cross(rA)) - (B.v + B.w.cross(rB));
+
+            if (j.type == JointType::Slider) {
+                // Constrain the two translation axes perpendicular to the slider
+                // axis (allow sliding along it); axis defined on A.
+                V3 ax = A.q.rotate(j.axisA).normalized();
+                V3 t1 = perpendicular(ax), t2 = ax.cross(t1).normalized();
+                Mat3 K = Mat3::scaled(A.invMass + B.invMass)
+                         - Mat3::skew(rA) * IA * Mat3::skew(rA)
+                         - Mat3::skew(rB) * IB * Mat3::skew(rB);
+                for (const V3& t : {t1, t2}) {
+                    double jv = vRel.dot(t) + posErr.dot(t) * (beta / dt);
+                    double k = t.dot(K * t);
+                    if (k > 1e-18) {
+                        double l = -jv / k;
+                        V3 P = t * l;
+                        A.v += P * A.invMass; A.w += IA * (rA.cross(P));
+                        B.v -= P * B.invMass; B.w -= IB * (rB.cross(P));
+                        j.appliedImpulse += std::fabs(l);
+                        vRel = (A.v + A.w.cross(rA)) - (B.v + B.w.cross(rB));
+                    }
+                }
+            } else {
+                Mat3 K = Mat3::scaled(A.invMass + B.invMass)
+                         - Mat3::skew(rA) * IA * Mat3::skew(rA)
+                         - Mat3::skew(rB) * IB * Mat3::skew(rB);
+                V3 P = K.solve(-(vRel + posErr * (beta / dt)));
+                A.v += P * A.invMass; A.w += IA * (rA.cross(P));
+                B.v -= P * B.invMass; B.w -= IB * (rB.cross(P));
+                j.appliedImpulse += P.norm();
+            }
+
+            // Angular constraints.
+            if (j.type == JointType::Fixed || j.type == JointType::Slider) {
+                // Lock the full relative orientation to the reference.
+                V3 wRel = A.w - B.w;
+                Q dq = (A.q * B.q.conjugate()) * j.refRel.conjugate();
+                V3 angErr{dq.x, dq.y, dq.z};
+                if (dq.w < 0.0) angErr = -angErr;
+                angErr = angErr * 2.0;
+                Mat3 Kang = IA + IB;
+                V3 L = Kang.solve(-(wRel + angErr * (beta / dt)));
+                A.w += IA * L; B.w -= IB * L;
+            } else if (j.type == JointType::Hinge) {
+                V3 aA = A.q.rotate(j.axisA).normalized();
+                V3 aB = B.q.rotate(j.axisB).normalized();
+                V3 t1 = perpendicular(aA), t2 = aA.cross(t1).normalized();
+                V3 alignErr = aA.cross(aB);              // zero when the axes align
+                Mat3 Kang = IA + IB;
+                for (const V3& t : {t1, t2}) {
+                    V3 wRel = A.w - B.w;
+                    double jv = wRel.dot(t) + alignErr.dot(t) * (beta / dt);
+                    double k = t.dot(Kang * t);
+                    if (k > 1e-18) {
+                        V3 L = t * (-jv / k);
+                        A.w += IA * L; B.w -= IB * L;
+                    }
+                }
+                // Motor about the hinge axis (clamped total impulse per step).
+                if (j.useMotor) {
+                    double k = aA.dot(Kang * aA);
+                    if (k > 1e-18) {
+                        double jv = (A.w - B.w).dot(aA) - j.motorSpeed;
+                        double l = -jv / k;
+                        double old = j.motorAcc;
+                        double nn = clampd(old + l, -j.maxMotorImpulse, j.maxMotorImpulse);
+                        l = nn - old; j.motorAcc = nn;
+                        V3 L = aA * l; A.w += IA * L; B.w -= IB * L;
+                    }
+                }
+                // Angle limit about the hinge axis.
+                if (j.useLimit) {
+                    Q dq = (A.q * B.q.conjugate()) * j.refRel.conjugate();
+                    V3 dv{dq.x, dq.y, dq.z};
+                    double angle = 2.0 * std::atan2(dv.dot(aA), dq.w);
+                    double c = 0.0; bool active = false;
+                    if (angle <= j.lower) { c = angle - j.lower; active = true; }
+                    else if (angle >= j.upper) { c = angle - j.upper; active = true; }
+                    if (active) {
+                        double k = aA.dot(Kang * aA);
+                        if (k > 1e-18) {
+                            double jv = (A.w - B.w).dot(aA) + c * (beta / dt);
+                            V3 L = aA * (-jv / k); A.w += IA * L; B.w -= IB * L;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (Joint& j : joints)
+        if (j.breakable && !j.broken && j.appliedImpulse > j.breakImpulse) j.broken = true;
 }
 
 void World::wake(Body& b) {

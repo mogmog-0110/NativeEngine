@@ -77,6 +77,52 @@ struct Q {
     V3 inverseRotate(const V3& v) const { return conjugate().rotate(v); }
 };
 
+// Row-major 3x3 matrix, for constraint (joint) effective-mass solves.
+struct Mat3 {
+    double m[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};   // m[row*3 + col]
+
+    static Mat3 zero() { Mat3 r; for (double& v : r.m) v = 0.0; return r; }
+    static Mat3 identity() { return Mat3{}; }
+    static Mat3 scaled(double s) { Mat3 r = zero(); r.m[0] = r.m[4] = r.m[8] = s; return r; }
+    static Mat3 diagonal(const V3& d) { Mat3 r = zero(); r.m[0] = d.x; r.m[4] = d.y; r.m[8] = d.z; return r; }
+    // Skew (cross-product) matrix: skew(v) * x == v.cross(x).
+    static Mat3 skew(const V3& v) {
+        return Mat3{ 0, -v.z, v.y,  v.z, 0, -v.x,  -v.y, v.x, 0 };
+    }
+    Mat3() = default;
+    Mat3(double a, double b, double c, double d, double e, double f, double g, double h, double i)
+        : m{a, b, c, d, e, f, g, h, i} {}
+
+    V3 operator*(const V3& v) const {
+        return {m[0] * v.x + m[1] * v.y + m[2] * v.z,
+                m[3] * v.x + m[4] * v.y + m[5] * v.z,
+                m[6] * v.x + m[7] * v.y + m[8] * v.z};
+    }
+    Mat3 operator*(const Mat3& o) const {
+        Mat3 r = zero();
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                for (int k = 0; k < 3; ++k) r.m[i * 3 + j] += m[i * 3 + k] * o.m[k * 3 + j];
+        return r;
+    }
+    Mat3 operator+(const Mat3& o) const { Mat3 r; for (int i = 0; i < 9; ++i) r.m[i] = m[i] + o.m[i]; return r; }
+    Mat3 operator-(const Mat3& o) const { Mat3 r; for (int i = 0; i < 9; ++i) r.m[i] = m[i] - o.m[i]; return r; }
+    Mat3 transposed() const { return Mat3{m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]}; }
+
+    Mat3 inverse() const {
+        double a = m[0], b = m[1], c = m[2], d = m[3], e = m[4], f = m[5], g = m[6], h = m[7], i = m[8];
+        double A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g;
+        double det = a * A + b * B + c * C;
+        if (std::fabs(det) < 1e-18) return zero();
+        double inv = 1.0 / det;
+        return Mat3{A * inv, (c * h - b * i) * inv, (b * f - c * e) * inv,
+                    B * inv, (a * i - c * g) * inv, (c * d - a * f) * inv,
+                    C * inv, (b * g - a * h) * inv, (a * e - b * d) * inv};
+    }
+    // Solve M x = rhs (returns zero on a singular matrix).
+    V3 solve(const V3& rhs) const { return inverse() * rhs; }
+};
+
 // Integrate an orientation by a world-frame angular velocity for time dt,
 // then renormalise. dq/dt = 0.5 * omega_quat * q.
 inline Q integrateOrientation(const Q& q, const V3& omega, double dt) {

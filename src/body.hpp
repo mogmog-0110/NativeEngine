@@ -115,6 +115,18 @@ struct Body {
         return lin + rot;
     }
 
+    // World-frame inverse inertia as a full 3x3 matrix: R * diag(invIbody) * R^T.
+    // Used by the joint solver (needs the matrix, not just its action on a vector).
+    Mat3 invInertiaWorld() const {
+        Mat3 R = rotationMatrix();
+        return R * Mat3::diagonal(invInertiaBody) * R.transposed();
+    }
+    // Body-to-world rotation as a 3x3 (columns are the rotated basis vectors).
+    Mat3 rotationMatrix() const {
+        V3 cx = q.rotate({1, 0, 0}), cy = q.rotate({0, 1, 0}), cz = q.rotate({0, 0, 1});
+        return Mat3{cx.x, cy.x, cz.x, cx.y, cy.y, cz.y, cx.z, cy.z, cz.z};
+    }
+
     // World-frame angular momentum L = I_world w.
     V3 angularMomentum() const {
         V3 Ibody{invInertiaBody.x > 0 ? 1.0 / invInertiaBody.x : 0.0,
