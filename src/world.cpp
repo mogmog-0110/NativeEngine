@@ -68,7 +68,7 @@ void World::collide() {
                 double dist = std::sqrt(dist2);
                 V3 normal = d / dist;                      // b -> a
                 resolveContact(a, b, normal * (-a.radius), normal * (b.radius),
-                               normal, restitution);
+                               normal, restitution, friction);
                 correctPenetration(a, b, normal, sumR - dist, contactBeta);
             } else if (sphereCyl) {
                 // Sphere-cylinder: exact analytic narrow phase (sphere = A so the
@@ -78,7 +78,7 @@ void World::collide() {
                 Contact c = sphereVsCylinder(sph, cyl, box);
                 if (!c.hit) continue;
                 resolveContact(sph, cyl, c.point - sph.x, box.minImage(c.point - cyl.x),
-                               c.normal, restitution);
+                               c.normal, restitution, friction);
                 double invSum = sph.invMass + cyl.invMass;
                 if (invSum > 0.0) {
                     V3 corr = c.normal * (contactBeta * c.overlap / invSum);
@@ -91,7 +91,7 @@ void World::collide() {
                 Contact c = convexContact(a, b, box);
                 if (!c.hit) continue;
                 resolveContact(a, b, box.minImage(c.point - a.x),
-                               box.minImage(c.point - b.x), c.normal, restitution);
+                               box.minImage(c.point - b.x), c.normal, restitution, friction);
                 double invSum = a.invMass + b.invMass;
                 if (invSum > 0.0) {
                     V3 corr = c.normal * (contactBeta * c.overlap / invSum);

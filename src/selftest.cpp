@@ -480,6 +480,44 @@ void test_box() {
     check(minSep > 1.7 && minSep < 2.3, "box-box: real collision, no tunneling");
 }
 
+// ---------------------------------------------------------------------------
+// 15. Coulomb friction at a contact: a glancing hit loses tangential speed,
+//     gains spin, dissipates energy, and stays inside the friction cone;
+//     mu = 0 leaves tangential motion untouched.
+// ---------------------------------------------------------------------------
+void test_friction() {
+    // Ball moving +x and slightly down onto a static floor (infinite mass box).
+    auto setup = [] {
+        Body ball = makeSphere(0, V3{0, 1.0, 0}, 1.0, 1.0);
+        ball.v = V3{2.0, -1.0, 0};   // sliding +x while pressing down
+        return ball;
+    };
+    Body floor = makeBox(1, V3{0, -1.0, 0}, Q{1, 0, 0, 0}, V3{10, 1, 10}, 1.0);
+    floor.invMass = 0.0; floor.invInertiaBody = {0, 0, 0};  // static
+
+    // Contact at the ball's bottom, normal +y (floor -> ball).
+    V3 contact{0, 0, 0};
+    V3 n{0, 1, 0};
+
+    Body frictionless = setup();
+    resolveContact(frictionless, floor, contact - frictionless.x, contact - floor.x, n, 0.0, 0.0);
+    check(std::fabs(frictionless.v.x - 2.0) < 1e-9 && frictionless.w.norm() < 1e-9,
+          "friction: mu=0 leaves tangential velocity and spin untouched");
+
+    Body rough = setup();
+    double vx0 = rough.v.x, ke0 = rough.kinetic();
+    resolveContact(rough, floor, contact - rough.x, contact - floor.x, n, 0.0, 0.5);
+    check(rough.v.x < vx0 - 1e-6, "friction: tangential velocity is reduced");
+    check(rough.w.norm() > 1e-6, "friction: contact imparts spin (rolling)");
+    check(rough.kinetic() <= ke0 + 1e-12, "friction: does not add energy");
+    // Cone: tangential impulse magnitude <= mu * normal impulse. The ball's
+    // normal impulse stopped v.y from -1 to 0 (dp_n = m*1). Tangential dp_x =
+    // m*(vx0 - v.x) must be <= mu * dp_n.
+    double m = 1.0 / rough.invMass;
+    double dpN = m * 1.0, dpT = m * (vx0 - rough.v.x);
+    check(dpT <= 0.5 * dpN + 1e-6, "friction: stays inside the Coulomb cone");
+}
+
 }  // namespace
 
 int runSelftest() {
@@ -498,6 +536,7 @@ int runSelftest() {
     test_epa_contact();
     test_cylinder_cylinder_dynamics();
     test_box();
+    test_friction();
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

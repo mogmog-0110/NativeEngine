@@ -24,26 +24,52 @@ namespace ne {
 // cancel; the spin terms are the bodies' response). r_a, r_b are lever arms from
 // each body centre to the contact point, already minimum-imaged by the caller,
 // so this function is PBC-agnostic.
+// Effective mass along a unit direction u for a contact at lever arms ra, rb.
+inline double effMass(const Body& a, const Body& b,
+                      const V3& ra, const V3& rb, const V3& u) {
+    V3 angA = a.applyInvInertiaWorld(ra.cross(u)).cross(ra);
+    V3 angB = b.applyInvInertiaWorld(rb.cross(u)).cross(rb);
+    return a.invMass + b.invMass + (angA + angB).dot(u);
+}
+
+// mu = Coulomb friction coefficient (0 = frictionless). Friction is applied
+// after the normal impulse, opposing the tangential relative velocity and
+// clamped to mu * (normal impulse) -- the standard Coulomb cone. It imparts spin
+// (a glancing hit makes a body roll) and dissipates tangential energy.
 inline void resolveContact(Body& a, Body& b,
                            const V3& ra, const V3& rb,
-                           const V3& n, double e) {
+                           const V3& n, double e, double mu = 0.0) {
     V3 vContact = (a.v + a.w.cross(ra)) - (b.v + b.w.cross(rb));
     double vn = vContact.dot(n);
     if (vn >= 0.0) return;   // separating (or resting): no impulse
 
-    V3 raxn = ra.cross(n);
-    V3 rbxn = rb.cross(n);
-    V3 angA = a.applyInvInertiaWorld(raxn).cross(ra);
-    V3 angB = b.applyInvInertiaWorld(rbxn).cross(rb);
-    double K = a.invMass + b.invMass + (angA + angB).dot(n);
+    double K = effMass(a, b, ra, rb, n);
     if (K <= 1e-18) return;
 
-    double j = -(1.0 + e) * vn / K;
-    V3 J = n * j;
+    double jn = -(1.0 + e) * vn / K;
+    V3 J = n * jn;
     a.v += J * a.invMass;
     a.w += a.applyInvInertiaWorld(ra.cross(J));
     b.v -= J * b.invMass;
     b.w -= b.applyInvInertiaWorld(rb.cross(J));
+
+    if (mu <= 0.0) return;
+    // Tangential relative velocity after the normal impulse.
+    V3 vc2 = (a.v + a.w.cross(ra)) - (b.v + b.w.cross(rb));
+    V3 vt = vc2 - n * vc2.dot(n);
+    double vtl = vt.norm();
+    if (vtl < 1e-12) return;
+    V3 t = vt / vtl;
+    double Kt = effMass(a, b, ra, rb, t);
+    if (Kt <= 1e-18) return;
+    double jt = -vtl / Kt;
+    double maxF = mu * jn;                       // jn > 0 here
+    if (jt < -maxF) jt = -maxF; else if (jt > maxF) jt = maxF;
+    V3 Jt = t * jt;
+    a.v += Jt * a.invMass;
+    a.w += a.applyInvInertiaWorld(ra.cross(Jt));
+    b.v -= Jt * b.invMass;
+    b.w -= b.applyInvInertiaWorld(rb.cross(Jt));
 }
 
 // Positional (overlap) correction along the contact normal, split by inverse

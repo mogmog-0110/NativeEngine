@@ -22,6 +22,7 @@ public:
     Box box;
     double dt = 1.0 / 120.0;
     double restitution = 1.0;   // e in [0,1]; 1 = perfectly elastic
+    double friction = 0.0;      // Coulomb mu; 0 = frictionless
     double contactBeta = 0.2;   // positional-correction fraction per step
 
     std::vector<Body> bodies;
