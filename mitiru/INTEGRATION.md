@@ -155,3 +155,26 @@ sgc::Vec3f smooth = phys.interpolatedPosition(ball, alpha); // judder-free at fi
   AABB) -- fine for gameplay, off for very asymmetric bodies.
 - The `native_physics_system.hpp` component field names are illustrative --
   adjust to the game's actual component; prefer the `BodyDesc` adapter above.
+
+## Status: wired into MitiruEngine (verified end-to-end, 2026-07-18)
+
+The concrete ECS adapter + CMake wiring now live IN the MitiruEngine repo, on
+branch `feat/nativephys-backend` (additive: two files, existing build untouched):
+
+- `include/mitiru/physics/NativePhysicsBridge.hpp` — `physics3d::NativePhysicsSystem`
+  (a `scene::ISystem`): maps entities with `RigidBodyComponent3D + TransformComponent`
+  to NativeEngine bodies via `BodyDesc`, fixed-steps, and writes poses back
+  (quaternion -> Euler). Enable with `-DMITIRU_USE_NATIVEPHYS=ON`.
+- Root `CMakeLists.txt` — an opt-in block (`MITIRU_USE_NATIVEPHYS`, default OFF)
+  that builds NativeEngine from a local path and defines `MITIRU_HAS_NATIVEPHYS`.
+
+**Verified against the real engine, not a mock:** a `scene::GameWorld` with real
+`TransformComponent` + `RigidBodyComponent3D` entities, driven by the system,
+drops a ball from y=5.0 to rest at y=0.489 on an AABB floor — compiled and run
+against MitiruEngine's actual `include/` + `external/sgc` + NativeEngine (C++20).
+
+**Build note:** MitiruEngine sources are UTF-8 with Japanese comments and require
+`/utf-8`. MitiruEngine's CMake already sets `/utf-8` on the `mitiru` target and,
+being INTERFACE in header-only mode, propagates it to consumers, so the binding
+TUs get it automatically. A standalone compile-check of the binding must pass
+`/utf-8` (else the multibyte comments corrupt brace parsing).
