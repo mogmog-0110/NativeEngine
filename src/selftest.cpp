@@ -681,6 +681,42 @@ void test_sleeping() {
     check(woke, "sleeping: a falling box wakes the sleeper it lands on");
 }
 
+// ---------------------------------------------------------------------------
+// 21. Broadphase: the uniform grid gives BIT-IDENTICAL results to the O(N^2)
+//     scan (it only prunes pairs that cannot touch), in a periodic box.
+// ---------------------------------------------------------------------------
+void test_broadphase() {
+    auto build = [](bool brute) {
+        World w;
+        w.box.half = 12.0; w.box.periodic = true;
+        w.restitution = 1.0; w.dt = 5e-3;
+        w.forceBruteForce = brute;
+        std::mt19937_64 rng(2024);
+        std::uniform_real_distribution<double> pos(-11.0, 11.0), vel(-2.0, 2.0);
+        for (int i = 0; i < 200; ++i) {          // > 64 -> grid path when !brute
+            Body b = makeSphere(i, V3{pos(rng), pos(rng), pos(rng)}, 1.0, 1.0);
+            b.v = V3{vel(rng), vel(rng), vel(rng)};
+            b.w = V3{vel(rng), vel(rng), vel(rng)};
+            w.bodies.push_back(b);
+        }
+        return w;
+    };
+    World grid = build(false), brute = build(true);
+    for (int s = 0; s < 1500; ++s) { grid.step(); brute.step(); }
+
+    bool identical = true;
+    double e = 0;
+    for (size_t i = 0; i < grid.bodies.size(); ++i) {
+        const Body& g = grid.bodies[i];
+        const Body& b = brute.bodies[i];
+        if (g.x.x != b.x.x || g.x.y != b.x.y || g.x.z != b.x.z ||
+            g.v.x != b.v.x || g.q.w != b.q.w) { identical = false; }
+        e = std::max(e, (g.x - b.x).norm());
+    }
+    check(identical, "broadphase: grid result is bit-identical to brute force");
+    check(e == 0.0, "broadphase: max position difference is exactly zero");
+}
+
 }  // namespace
 
 int runSelftest() {
@@ -705,6 +741,7 @@ int runSelftest() {
     test_resting();
     test_stacking();
     test_sleeping();
+    test_broadphase();
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

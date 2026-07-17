@@ -49,6 +49,13 @@ struct Body {
 
     bool isSphere() const { return shape == Shape::Sphere; }
 
+    // Radius of a bounding sphere about the centre (for broadphase).
+    double boundingRadius() const {
+        if (shape == Shape::Sphere) return radius;
+        if (shape == Shape::Box) return halfExtents.norm();
+        return std::sqrt(halfHeight * halfHeight + radius * radius);  // cylinder
+    }
+
     // World-frame inverse inertia applied to a world vector:  Iinv_world * u
     // = R * diag(invIbody) * R^T * u.
     V3 applyInvInertiaWorld(const V3& u) const {

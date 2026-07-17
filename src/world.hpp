@@ -2,6 +2,7 @@
 #ifndef NATIVEENGINE_WORLD_HPP
 #define NATIVEENGINE_WORLD_HPP
 
+#include <utility>
 #include <vector>
 
 #include "body.hpp"
@@ -33,6 +34,12 @@ public:
     bool sleepEnabled = false;
     double sleepLinVel = 0.05, sleepAngVel = 0.05, sleepTime = 0.5, wakeVel = 0.5;
 
+    // Broadphase: a PBC-aware uniform grid replaces the O(N^2) pair scan for
+    // large scenes. Candidate pairs are sorted to (i<j) order so the constraint
+    // list -- and thus the result -- is bit-identical to the brute-force scan.
+    // forceBruteForce is a test hook to compare the two.
+    bool forceBruteForce = false;
+
     std::vector<Body> bodies;
 
     void step();
@@ -46,6 +53,8 @@ public:
 private:
     void integrate();
     void collide();        // all shape pairs
+    // Candidate pairs (sorted, i<j) from the broadphase.
+    std::vector<std::pair<std::size_t, std::size_t>> broadphasePairs() const;
     void updateSleep();    // put settled bodies to sleep
     void applyWalls();     // reflective boundary
     void wrapPositions();  // periodic boundary

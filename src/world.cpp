@@ -6,6 +6,9 @@
 #include "detect.hpp"
 #include "manifold.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <unordered_map>
 #include <vector>
 
 namespace ne {
@@ -98,15 +101,82 @@ void World::integrate() {
 // keeps the impulse application deterministic. Cylinder-cylinder narrow phase
 // (GJK/EPA) is added in the next increment; here we handle sphere-sphere and
 // sphere-cylinder.
-void World::collide() {
+// PBC-aware uniform-grid broadphase. Cell size = 2*max bounding radius, so any
+// overlapping pair lies in the same or an adjacent cell. Candidate pairs are
+// normalised to (i<j), de-duplicated, and SORTED, so the downstream constraint
+// list is identical (and bit-for-bit deterministic) to the brute-force scan --
+// the grid only prunes pairs that could not touch. Falls back to O(N^2) for
+// small N or a degenerate grid.
+std::vector<std::pair<std::size_t, std::size_t>> World::broadphasePairs() const {
     const size_t n = bodies.size();
+    std::vector<std::pair<std::size_t, std::size_t>> pairs;
+    double maxR = 0.0;
+    for (const Body& b : bodies) maxR = std::max(maxR, b.boundingRadius());
+    const double cell = 2.0 * maxR;
 
-    // 1. Detect: build a constraint per overlapping pair. Deterministic i<j order.
-    std::vector<Constraint> cons;
+    if (forceBruteForce || n < 64 || cell < 1e-9) {
+        for (size_t i = 0; i < n; ++i)
+            for (size_t j = i + 1; j < n; ++j) pairs.push_back({i, j});
+        return pairs;
+    }
+
+    // Per-axis cell counts for the periodic wrap (>=1). Reflective uses unbounded
+    // integer cells (no wrap).
+    int nc[3] = {1, 1, 1};
+    if (box.periodic) {
+        double L = box.edge();
+        for (int a = 0; a < 3; ++a) nc[a] = std::max(1, (int)std::floor(L / cell));
+    }
+    auto cellOf = [&](const V3& p, int axis) -> long {
+        double c = axis == 0 ? p.x : (axis == 1 ? p.y : p.z);
+        if (box.periodic) {
+            long k = (long)std::floor((c + box.half) / cell);
+            long m = nc[axis];
+            return ((k % m) + m) % m;
+        }
+        return (long)std::floor(c / cell);
+    };
+    auto key = [](long x, long y, long z) {
+        return (std::uint64_t)(x & 0x1FFFFF) | ((std::uint64_t)(y & 0x1FFFFF) << 21) |
+               ((std::uint64_t)(z & 0x1FFFFF) << 42);
+    };
+
+    std::unordered_map<std::uint64_t, std::vector<size_t>> grid;
+    grid.reserve(n * 2);
     for (size_t i = 0; i < n; ++i) {
-        Body& a = bodies[i];
-        for (size_t j = i + 1; j < n; ++j) {
-            Body& b = bodies[j];
+        long cx = cellOf(bodies[i].x, 0), cy = cellOf(bodies[i].x, 1), cz = cellOf(bodies[i].x, 2);
+        grid[key(cx, cy, cz)].push_back(i);
+    }
+    for (size_t i = 0; i < n; ++i) {
+        long cx = cellOf(bodies[i].x, 0), cy = cellOf(bodies[i].x, 1), cz = cellOf(bodies[i].x, 2);
+        for (int dx = -1; dx <= 1; ++dx)
+            for (int dy = -1; dy <= 1; ++dy)
+                for (int dz = -1; dz <= 1; ++dz) {
+                    long nx = cx + dx, ny = cy + dy, nz = cz + dz;
+                    if (box.periodic) {
+                        nx = ((nx % nc[0]) + nc[0]) % nc[0];
+                        ny = ((ny % nc[1]) + nc[1]) % nc[1];
+                        nz = ((nz % nc[2]) + nc[2]) % nc[2];
+                    }
+                    auto it = grid.find(key(nx, ny, nz));
+                    if (it == grid.end()) continue;
+                    for (size_t j : it->second)
+                        if (j != i) pairs.push_back({std::min(i, j), std::max(i, j)});
+                }
+    }
+    std::sort(pairs.begin(), pairs.end());
+    pairs.erase(std::unique(pairs.begin(), pairs.end()), pairs.end());
+    return pairs;
+}
+
+void World::collide() {
+    // 1. Detect: build a constraint per overlapping pair, in sorted (i<j) order.
+    std::vector<Constraint> cons;
+    for (const auto& pr : broadphasePairs()) {
+        {
+            Body& a = bodies[pr.first];
+            Body& b = bodies[pr.second];
+            const size_t i = pr.first, j = pr.second;
             if (a.invMass + b.invMass <= 0.0) continue;
             Contact c = detectContact(a, b, box);
             if (!c.hit) continue;
