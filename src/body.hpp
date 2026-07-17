@@ -20,7 +20,23 @@ namespace ne {
 //   Plane  : an infinite static half-space; `halfExtents` holds the world normal
 //            and the plane passes through `x`.
 //   Mesh   : a static triangle mesh (`mesh`, a shared BVH); body transform places it.
-enum class Shape { Sphere, Cylinder, Box, Capsule, Convex, Plane, Mesh };
+//   Compound: several child primitives at local transforms (`children`).
+enum class Shape { Sphere, Cylinder, Box, Capsule, Convex, Plane, Mesh, Compound };
+
+// A child primitive of a compound body, positioned in the parent's frame. Only
+// primitive shapes (sphere/box/cylinder/capsule) are allowed as children.
+struct ChildShape {
+    Shape shape = Shape::Sphere;
+    V3 localPos;
+    Q localRot{1, 0, 0, 0};
+    double radius = 1.0;
+    double halfHeight = 0.0;
+    V3 halfExtents;
+    static ChildShape sphere(const V3& p, double r) { ChildShape c; c.shape = Shape::Sphere; c.localPos = p; c.radius = r; return c; }
+    static ChildShape box(const V3& p, const Q& q, const V3& he) { ChildShape c; c.shape = Shape::Box; c.localPos = p; c.localRot = q; c.halfExtents = he; return c; }
+    static ChildShape cylinder(const V3& p, const Q& q, double r, double hh) { ChildShape c; c.shape = Shape::Cylinder; c.localPos = p; c.localRot = q; c.radius = r; c.halfHeight = hh; return c; }
+    static ChildShape capsule(const V3& p, const Q& q, double r, double hh) { ChildShape c; c.shape = Shape::Capsule; c.localPos = p; c.localRot = q; c.radius = r; c.halfHeight = hh; return c; }
+};
 
 struct Body {
     // State
@@ -44,6 +60,7 @@ struct Body {
     V3 halfExtents;            // box half-extents (Box); world normal (Plane)
     std::vector<V3> vertices;  // convex-hull vertices, body frame (Convex only)
     std::shared_ptr<const MeshData> mesh;   // triangle mesh + BVH (Mesh only)
+    std::vector<ChildShape> children;       // sub-shapes (Compound only)
 
     int id = -1;               // stable id (sphere ids and cylinder ids are
                                // separate namespaces, matching the science layer)
@@ -118,6 +135,16 @@ struct Body {
         if (shape == Shape::Convex) {
             double m = 0.0;
             for (const V3& vert : vertices) m = std::max(m, vert.norm());
+            return m;
+        }
+        if (shape == Shape::Compound) {
+            double m = 0.0;
+            for (const ChildShape& ch : children) {
+                double cr = (ch.shape == Shape::Sphere) ? ch.radius
+                          : (ch.shape == Shape::Box) ? ch.halfExtents.norm()
+                          : ch.halfHeight + ch.radius;
+                m = std::max(m, ch.localPos.norm() + cr);
+            }
             return m;
         }
         return std::sqrt(halfHeight * halfHeight + radius * radius);  // cylinder
@@ -307,6 +334,60 @@ inline Body makePlane(int id, const V3& point, const V3& normal) {
     b.invMass = 0.0;
     b.invInertiaBody = {0, 0, 0};
     b.dynamic = false;
+    return b;
+}
+
+// A child primitive as a standalone Body (for mass/inertia and collision).
+inline Body makeChildShapeBody(const ChildShape& ch, const V3& pos, const Q& rot, double density) {
+    switch (ch.shape) {
+        case Shape::Box:      return makeBox(0, pos, rot, ch.halfExtents, density);
+        case Shape::Cylinder: return makeCylinder(0, pos, rot, ch.radius, 2.0 * ch.halfHeight, density);
+        case Shape::Capsule:  return makeCapsule(0, pos, rot, ch.radius, ch.halfHeight, density);
+        default:              return makeSphere(0, pos, ch.radius, density);
+    }
+}
+
+// A compound body's child placed in world space (geometry only, for narrow phase).
+inline Body compoundChildWorld(const Body& parent, const ChildShape& ch) {
+    Body c;
+    c.shape = ch.shape;
+    c.x = parent.x + parent.q.rotate(ch.localPos);
+    c.q = parent.q * ch.localRot;
+    c.radius = ch.radius; c.halfHeight = ch.halfHeight; c.halfExtents = ch.halfExtents;
+    c.invMass = 0.0; c.dynamic = false;
+    return c;
+}
+
+// Factory: a compound of primitive children (given relative to the intended
+// centre of mass). Mass sums the children; the inertia is the DIAGONAL of the
+// summed tensor via the parallel-axis theorem -- exact for children symmetric
+// about the body axes, approximate otherwise (products of inertia dropped).
+inline Body makeCompound(int id, const V3& x, const Q& q, std::vector<ChildShape> children,
+                         double density) {
+    Body b;
+    b.shape = Shape::Compound;
+    b.id = id;
+    b.x = x;
+    b.q = q;
+    b.children = std::move(children);
+    double M = 0.0;
+    V3 Idiag;
+    for (const ChildShape& ch : b.children) {
+        Body t = makeChildShapeBody(ch, V3{0, 0, 0}, Q{1, 0, 0, 0}, density);
+        double mc = (t.invMass > 0) ? 1.0 / t.invMass : 0.0;
+        V3 Ic{t.invInertiaBody.x > 0 ? 1.0 / t.invInertiaBody.x : 0.0,
+              t.invInertiaBody.y > 0 ? 1.0 / t.invInertiaBody.y : 0.0,
+              t.invInertiaBody.z > 0 ? 1.0 / t.invInertiaBody.z : 0.0};
+        V3 o = ch.localPos;
+        M += mc;
+        Idiag.x += Ic.x + mc * (o.y * o.y + o.z * o.z);
+        Idiag.y += Ic.y + mc * (o.x * o.x + o.z * o.z);
+        Idiag.z += Ic.z + mc * (o.x * o.x + o.y * o.y);
+    }
+    b.invMass = (M > 0) ? 1.0 / M : 0.0;
+    b.invInertiaBody = {Idiag.x > 0 ? 1.0 / Idiag.x : 0.0,
+                        Idiag.y > 0 ? 1.0 / Idiag.y : 0.0,
+                        Idiag.z > 0 ? 1.0 / Idiag.z : 0.0};
     return b;
 }
 

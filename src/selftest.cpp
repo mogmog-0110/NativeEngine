@@ -1246,6 +1246,23 @@ void test_mesh() {
     }
 }
 
+void test_compound() {
+    PhysicsWorld pw;
+    pw.setBox(1000.0, false); pw.setTimestep(1.0 / 240.0); pw.setGravity(V3{0, -10, 0});
+    pw.setRestitution(0.0); pw.setFriction(0.5);
+    BodyId floor = pw.addBox(V3{0, -1, 0}, Q{1, 0, 0, 0}, V3{20, 1, 20}, 1.0); pw.makeStatic(floor);
+    (void)floor;
+    // a dumbbell: two spheres offset along X, held rigid as one body
+    std::vector<ChildShape> kids = {ChildShape::sphere(V3{-1, 0, 0}, 0.5),
+                                    ChildShape::sphere(V3{1, 0, 0}, 0.5)};
+    BodyId db = pw.addCompound(V3{0, 5, 0}, Q{1, 0, 0, 0}, kids, 1.0);
+    for (int s = 0; s < 1500; ++s) pw.step();
+    V3 p = pw.position(db);
+    check(close(p.y, 0.5, 0.05), "compound: dumbbell rests on both spheres at radius height");
+    check(pw.velocity(db).norm() < 0.1, "compound: comes to rest");
+    check(std::fabs(p.x) < 1.0 && std::fabs(p.z) < 1.0, "compound: does not tip or drift");
+}
+
 }  // namespace
 
 int runSelftest() {
@@ -1289,6 +1306,7 @@ int runSelftest() {
     test_ccd();
     test_integration_api();
     test_mesh();
+    test_compound();
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

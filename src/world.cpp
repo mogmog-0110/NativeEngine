@@ -77,16 +77,40 @@ void meshContacts(const Body& other, const Body& meshBody, const Box& box,
 }
 
 // All contacts for a pair, normal always pointing b -> a. Box-box uses a clipping
-// manifold; a mesh expands into per-triangle contacts; everything else is one
-// narrow-phase point.
+// manifold; a mesh expands into per-triangle contacts; a compound expands into
+// per-child contacts; everything else is one narrow-phase point.
 void gatherContacts(const Body& a, const Body& b, const Box& box, std::vector<Contact>& out) {
-    if (b.shape == Shape::Mesh) {
-        meshContacts(a, b, box, out);                  // normal mesh(b) -> a  == b -> a
+    if (b.shape == Shape::Mesh) { meshContacts(a, b, box, out); return; }        // mesh(b) -> a == b -> a
+    if (a.shape == Shape::Mesh) {
+        meshContacts(b, a, box, out);
+        for (Contact& c : out) c.normal = -c.normal;                            // -> b -> a
         return;
     }
-    if (a.shape == Shape::Mesh) {
-        meshContacts(b, a, box, out);                  // normal mesh(a) -> b
-        for (Contact& c : out) c.normal = -c.normal;   // -> b -> a
+    // Compound: test each child (as a temp body) against the other; normals are
+    // reported b -> a as usual. Compound-vs-compound expands both.
+    if (a.shape == Shape::Compound || b.shape == Shape::Compound) {
+        if (a.shape == Shape::Compound && b.shape == Shape::Compound) {
+            for (const ChildShape& ca : a.children) {
+                Body ba = compoundChildWorld(a, ca);
+                for (const ChildShape& cb : b.children) {
+                    Body bb = compoundChildWorld(b, cb);
+                    Contact c = detectContact(ba, bb, box);                     // bb -> ba == b -> a
+                    if (c.hit) out.push_back(c);
+                }
+            }
+        } else if (a.shape == Shape::Compound) {
+            for (const ChildShape& ca : a.children) {
+                Body ba = compoundChildWorld(a, ca);
+                Contact c = detectContact(ba, b, box);                          // b -> ba == b -> a
+                if (c.hit) out.push_back(c);
+            }
+        } else {
+            for (const ChildShape& cb : b.children) {
+                Body bb = compoundChildWorld(b, cb);
+                Contact c = detectContact(a, bb, box);                          // bb(=b) -> a == b -> a
+                if (c.hit) out.push_back(c);
+            }
+        }
         return;
     }
     Contact c = detectContact(a, b, box);

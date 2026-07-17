@@ -68,6 +68,10 @@ public:
     BodyId addConvex(const V3& pos, const Q& rot, const std::vector<V3>& verts, double density) {
         return add(makeConvex(0, pos, rot, verts, density));
     }
+    // A compound of primitive children given relative to the centre of mass.
+    BodyId addCompound(const V3& pos, const Q& rot, const std::vector<ChildShape>& children, double density) {
+        return add(makeCompound(0, pos, rot, children, density));
+    }
     // An infinite static plane (half-space) through `point` with outward `normal`.
     BodyId addPlane(const V3& point, const V3& normal) {
         return add(makePlane(0, point, normal));
