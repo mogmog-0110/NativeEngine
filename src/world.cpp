@@ -39,7 +39,7 @@ void World::step() {
     solveRigidJoints(8);    // bilateral distance constraints
     if (box.periodic)
         wrapPositions();
-    else
+    else if (!openBoundary)
         applyWalls();
     if (sleepEnabled) updateSleep();
 }

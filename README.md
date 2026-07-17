@@ -9,9 +9,10 @@ have periodic boundaries but soften the contact into a penalty potential. This
 engine keeps the game-engine rigid-body method and puts the toroidal topology
 into the distance function itself (minimum image), with no ghost bodies.
 
-It is designed to embed in **MitiruEngine** as a physics backend (see
-`mitiru/INTEGRATION.md`), and doubles as the simulator for a coarse-grained
-macrocycle self-assembly study (the science layer is reused unchanged).
+It is a standalone project (no dependency on any other repo). It is designed to
+embed in **MitiruEngine** as a physics backend (see `mitiru/INTEGRATION.md`), and
+its science-facing use (a coarse-grained macrocycle self-assembly study) lives in
+the consuming project as a bridge — the engine itself knows nothing about it.
 
 ## Features
 
@@ -48,8 +49,10 @@ src/
   world.hpp/.cpp   integrator, solver, joints, broadphase, sleeping, boundaries
   physics_world.hpp/.cpp   handle-based facade + contact events
   selftest.cpp     86 physics unit tests
-compat/
-  PxPhysicsAPI.h   PhysX shim so the original science layer compiles unchanged
+viewer/
+  viewer.cpp       LIVE interactive demo viewer (steps the engine in real time)
+  gl_core.hpp      OpenGL 3.3 core loader; glmath.hpp   float math for rendering
+  build_viewer.bat freeglut + modern GL (instanced Blinn-Phong, MSAA)
 mitiru/
   native_physics_world.hpp    sgc-typed MitiruEngine backend + Null stub
   native_physics_system.hpp   scene::ISystem adapter (drop-in)
@@ -58,19 +61,32 @@ mitiru/
 
 ## Build & test
 
-    NativeEngine\build.bat
-    NativeEngine\build\NativeEngine.exe --selftest        # 86/86 physics tests
+    build.bat
+    build\NativeEngine.exe --selftest        # 86/86 physics tests
 
-MitiruEngine binding (via the sgc shim) and science-layer reuse:
+MitiruEngine binding (via the sgc shim):
 
-    NativeEngine\mitiru\build_binding_test.bat  &&  build\test_binding.exe        # 5/5
-    NativeEngine\build_science_test.bat         &&  build\test_science.exe        # 9/9
+    mitiru\build_binding_test.bat  &&  build\test_binding.exe        # 5/5
 
-Requires only MSVC (VS 2022). No external SDK.
+Core + selftest + binding require only MSVC (VS 2022) — no external SDK.
+
+## Live demos
+
+The viewer steps the engine in real time (not a recording) and is interactive —
+classic PhysX-snippet scenes on an open ground, plus the periodic-boundary
+feature demos. Requires freeglut (`FREEGLUT_ROOT`, default `E:\dev\freeglut`).
+
+    viewer\build_viewer.bat
+    build\NativeViewer.exe 1        # 1 pyramid  2 brick-wall+ball  3 dominoes
+                                    # 4 sphere pile  5 cylinder pile  6 rope
+                                    # 7 elastic gas (box)  8 PERIODIC gas  9 PERIODIC pair
+
+Keys: `1`-`9` scene · `n` next · `r` reset · `d` drop a body · `space` pause ·
+`,`/`.` sim speed · `h` recenter camera · drag to orbit · wheel to zoom.
 
 ## Status
 
-Game-physics core + MitiruEngine binding: complete and tested. Remaining: the
-macrocycle science demo (reproduce the PhysX reflective results as a correctness
-proof, then run the native-PBC experiment on the wall-templating artifact),
-which reuses the bonding joints and the science layer already present.
+Game-physics core + MitiruEngine binding + live interactive viewer: complete and
+tested. The macrocycle science use (reproduce the PhysX reflective results, then
+run the native-PBC experiment) lives in the consuming project as a bridge, and
+reuses the bonding joints and science layer.

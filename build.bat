@@ -13,10 +13,9 @@ if not exist "%~dp0build" mkdir "%~dp0build"
 pushd "%~dp0build"
 
 cl /nologo /std:c++17 /EHsc /O2 /W4 /WX ^
-   /I "%~dp0src" /I "%~dp0demo" /I "%~dp0..\PhysxRender" ^
+   /I "%~dp0src" ^
    "%~dp0src\world.cpp" "%~dp0src\physics_world.cpp" ^
    "%~dp0src\selftest.cpp" "%~dp0src\main.cpp" ^
-   "%~dp0demo\demos.cpp" "%~dp0..\PhysxRender\recording.cpp" ^
    /Fe:NativeEngine.exe
 set RC=%ERRORLEVEL%
 

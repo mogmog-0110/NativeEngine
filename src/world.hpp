@@ -47,6 +47,11 @@ public:
     bool sleepEnabled = false;
     double sleepLinVel = 0.05, sleepAngVel = 0.05, sleepTime = 0.5, wakeVel = 0.5;
 
+    // Open boundary: no reflective walls (objects rest on a ground body and can
+    // fall off its edges) -- the normal game setup. Ignored when periodic.
+    // Default false keeps the reflective-box behaviour the science runs rely on.
+    bool openBoundary = false;
+
     // Broadphase: a PBC-aware uniform grid replaces the O(N^2) pair scan for
     // large scenes. Candidate pairs are sorted to (i<j) order so the constraint
     // list -- and thus the result -- is bit-identical to the brute-force scan.
