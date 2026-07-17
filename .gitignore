@@ -3,4 +3,11 @@ build/
 *.obj
 *.pdb
 *.ilk
-NativeEngine/demos_out/*.pxrf
+*.lib
+*.exp
+
+# staged runtime dep for the viewer
+freeglut.dll
+
+.vs/
+*.user
