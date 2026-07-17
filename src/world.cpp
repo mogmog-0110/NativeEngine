@@ -2,6 +2,7 @@
 
 #include "contact.hpp"
 #include "narrowphase.hpp"
+#include "epa.hpp"
 
 namespace ne {
 
@@ -21,11 +22,20 @@ void World::integrate() {
             b.torque = {};
             continue;
         }
-        // Symplectic Euler: velocities first, then positions.
+        // Linear: symplectic Euler.
         b.v += b.force * (b.invMass * dt);
-        b.w += b.applyInvInertiaWorld(b.torque) * dt;
         b.x += b.v * dt;
+
+        // Rotational: integrate ANGULAR MOMENTUM, not angular velocity. For an
+        // asymmetric body (the cylinder, Ixx != Iyy) a torque-free w is NOT
+        // constant -- only L is -- so advancing w directly would leak angular
+        // momentum. Advance L by the torque, rotate by the current w, then
+        // recompute w = I_world(q_new)^-1 L so L is conserved exactly at zero
+        // torque. (For the isotropic sphere this reduces to constant w.)
+        V3 L = b.angularMomentum();      // I_world(q) w, at the current pose
+        L += b.torque * dt;
         b.q = integrateOrientation(b.q, b.w, dt);
+        b.w = b.applyInvInertiaWorld(L); // w consistent with L at the new pose
         b.force = {};
         b.torque = {};
     }
@@ -73,8 +83,22 @@ void World::collide() {
                     sph.x += corr * sph.invMass;
                     cyl.x -= corr * cyl.invMass;
                 }
+            } else {
+                // Two non-spheres (cylinder-cylinder, and boxes later): general
+                // convex contact via GJK + EPA. A = bodies[i], B = bodies[j];
+                // the normal points from B toward A.
+                Contact c = convexContact(a, b, box);
+                if (!c.hit) continue;
+                V3 rA = box.minImage(c.point - a.x);
+                V3 rB = box.minImage(c.point - b.x);
+                resolveContact(a, b, rA, rB, c.normal, restitution);
+                double invSum = a.invMass + b.invMass;
+                if (invSum > 0.0) {
+                    V3 corr = c.normal * (contactBeta * c.overlap / invSum);
+                    a.x += corr * a.invMass;
+                    b.x -= corr * b.invMass;
+                }
             }
-            // (cylinder-cylinder handled in the GJK/EPA increment)
         }
     }
 }

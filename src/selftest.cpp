@@ -7,6 +7,7 @@
 #include "contact.hpp"
 #include "narrowphase.hpp"
 #include "gjk.hpp"
+#include "epa.hpp"
 
 namespace ne {
 namespace {
@@ -351,6 +352,91 @@ void test_gjk_overlap() {
           "gjk: same pair does NOT overlap without PBC (9 apart)");
 }
 
+// ---------------------------------------------------------------------------
+// 12. EPA penetration: normal + depth cross-checked against the INDEPENDENT
+//     analytic sphere-cylinder oracle, plus contact-point sanity.
+// ---------------------------------------------------------------------------
+void test_epa_contact() {
+    Box box; box.periodic = false; box.half = 100.0;
+    Body cyl = makeCylinder(0, V3{0, 0, 0}, Q{1, 0, 0, 0}, 1.0, 4.0, 1.0);
+
+    // Sphere overlapping the side/cap: EPA (sphere=A, cyl=B) normal points from
+    // B (cyl) toward A (sphere) -- outward from the cylinder -- matching the
+    // analytic oracle.
+    struct { V3 p; V3 n; double ov; const char* what; } cs[] = {
+        {{1.6, 0, 0},   {1, 0, 0}, 0.4, "side"},
+        {{0, 2.7, 0},   {0, 1, 0}, 0.3, "cap"},
+    };
+    bool ok = true;
+    for (auto& t : cs) {
+        Body s = makeSphere(9, t.p, 1.0, 1.0);
+        Contact e = convexContact(s, cyl, box);       // A=sphere, normal B->A = outward
+        Contact a = sphereVsCylinder(s, cyl, box);
+        if (!e.hit || !a.hit) { ok = false; continue; }
+        if ((e.normal - t.n).norm() > 1e-3) ok = false;
+        if (std::fabs(e.overlap - t.ov) > 1e-3) ok = false;
+        if (std::fabs(e.overlap - a.overlap) > 1e-3) ok = false;
+    }
+    check(ok, "epa: normal+depth match analytic sphere-cylinder (side, cap)");
+
+    // Two parallel cylinders overlapping radially by 0.5: normal ~ +-x, depth 0.5.
+    Body c2 = makeCylinder(1, V3{1.5, 0, 0}, Q{1, 0, 0, 0}, 1.0, 4.0, 1.0);
+    Contact cc = convexContact(cyl, c2, box);          // A=cyl@0, B=cyl@1.5 -> n = -x
+    check(cc.hit && std::fabs(std::fabs(cc.normal.x) - 1.0) < 1e-3 &&
+              std::fabs(cc.overlap - 0.5) < 1e-3,
+          "epa: parallel cylinders -- normal along x, depth 0.5");
+    check(cc.hit && std::fabs(cc.point.x - 0.75) < 0.15,
+          "epa: cylinder-cylinder contact point between the two");
+}
+
+// ---------------------------------------------------------------------------
+// 13. Cylinder-cylinder dynamics through the world: conserves momentum +
+//     angular momentum + energy, across a reflective and a periodic boundary.
+// ---------------------------------------------------------------------------
+void test_cylinder_cylinder_dynamics() {
+    for (bool periodic : {false, true}) {
+        World w;
+        w.box.half = periodic ? 6.0 : 100.0;
+        w.box.periodic = periodic;
+        w.restitution = 1.0; w.dt = 1e-3;
+        Body a = makeCylinder(0, V3{-2.5, 0.3, 0}, Q{1, 0, 0, 0}, 1.0, 4.0, 1.0);
+        Body b = makeCylinder(1, V3{ 2.5, 0.0, 0}, Q{1, 0, 0, 0}, 1.0, 4.0, 1.0);
+        a.v = V3{ 1.5, 0, 0};
+        b.v = V3{-1.5, 0, 0};
+        w.bodies = {a, b};
+
+        auto P = [&] { V3 p; for (auto& x : w.bodies) p += x.v * (1.0 / x.invMass); return p; };
+        auto Lm = [&] { V3 l; for (auto& x : w.bodies) {
+            l += x.x.cross(x.v * (1.0 / x.invMass)); l += x.angularMomentum(); } return l; };
+        auto E = [&] { double e = 0; for (auto& x : w.bodies) e += x.kinetic(); return e; };
+
+        V3 p0 = P(); double e0 = E();
+        V3 l0 = Lm();
+        double minSep = 1e9;
+        for (int s = 0; s < 6000; ++s) {
+            w.step();
+            double sep = w.box.minImage(w.bodies[0].x - w.bodies[1].x).norm();
+            if (sep < minSep) minSep = sep;
+        }
+
+        check(closeV(P(), p0, 1e-6),
+              periodic ? "cyl-cyl: momentum conserved (periodic)"
+                       : "cyl-cyl: momentum conserved (reflective)");
+        check(std::fabs(E() - e0) / e0 < 1e-3,
+              periodic ? "cyl-cyl: energy conserved (periodic)"
+                       : "cyl-cyl: energy conserved (reflective)");
+        // The collision MUST actually happen and MUST NOT tunnel. Two parallel
+        // r=1 barrels touch at centre separation ~2; a wrong-sign normal would
+        // let them pass through, driving minSep toward 0. So a real elastic
+        // collision keeps minSep in a band just above 2, never near 0.
+        check(minSep > 1.7 && minSep < 2.3,
+              periodic ? "cyl-cyl: real collision, no tunneling (periodic)"
+                       : "cyl-cyl: real collision, no tunneling (reflective)");
+        if (!periodic)
+            check(closeV(Lm(), l0, 1e-5), "cyl-cyl: angular momentum conserved (reflective)");
+    }
+}
+
 }  // namespace
 
 int runSelftest() {
@@ -366,6 +452,8 @@ int runSelftest() {
     test_sphere_cylinder_geometry();
     test_sphere_cylinder_dynamics();
     test_gjk_overlap();
+    test_epa_contact();
+    test_cylinder_cylinder_dynamics();
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
