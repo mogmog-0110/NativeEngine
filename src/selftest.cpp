@@ -577,6 +577,29 @@ void test_physics_world() {
           "facade: contact callback fires for the overlapping pair");
 }
 
+// ---------------------------------------------------------------------------
+// 18. Resting contact: a sphere dropped onto a static floor under gravity comes
+//     to rest at radius height and stops bouncing (restitution slop + position
+//     correction + the iterative solver).
+// ---------------------------------------------------------------------------
+void test_resting() {
+    PhysicsWorld pw;
+    pw.setBox(1e6, false);
+    pw.setTimestep(1.0 / 240.0);
+    pw.setGravity(V3{0, -10.0, 0});
+    pw.setRestitution(0.0);   // inelastic -> should settle
+    BodyId floor = pw.makeStatic(
+        pw.addBox(V3{0, -1.0, 0}, Q{1, 0, 0, 0}, V3{20, 1, 20}, 1.0));  // top at y=0
+    BodyId ball = pw.addSphere(V3{0, 3.0, 0}, 1.0, 1.0);
+    (void)floor;
+    for (int s = 0; s < 3000; ++s) pw.step();   // 12.5 s
+    double y = pw.position(ball).y;
+    double vy = pw.velocity(ball).y;
+    check(y > 0.9 && y < 1.15, "resting: sphere settles at ~radius above the floor");
+    check(std::fabs(vy) < 0.2, "resting: sphere stops bouncing (small residual velocity)");
+    check(y > 0.5, "resting: sphere does not sink through the static floor");
+}
+
 }  // namespace
 
 int runSelftest() {
@@ -598,6 +621,7 @@ int runSelftest() {
     test_friction();
     test_gravity();
     test_physics_world();
+    test_resting();
     std::printf("\n=== Summary ===\n  Passed: %d\n  Failed: %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

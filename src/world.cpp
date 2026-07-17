@@ -3,8 +3,30 @@
 #include "contact.hpp"
 #include "narrowphase.hpp"
 #include "epa.hpp"
+#include "detect.hpp"
+
+#include <vector>
 
 namespace ne {
+
+// A one-point contact constraint for the iterative solver. Single point per pair
+// for now (box-box face manifolds via clipping come next); the accumulated
+// impulses + restitution bias make it a proper sequential-impulse solver that
+// handles several simultaneous contacts on one body.
+namespace {
+struct Constraint {
+    std::size_t i, j;
+    V3 n;              // b -> a
+    V3 rA, rB;         // lever arms (minimum-imaged)
+    double overlap;
+    double restBias;   // target separating speed from restitution
+    double nImp = 0.0, tImp = 0.0;
+};
+
+// Below this approach speed, restitution is suppressed so resting contacts do
+// not jitter or gain energy.
+constexpr double kRestitutionSlop = 0.5;
+}  // namespace
 
 void World::step() {
     integrate();
@@ -49,59 +71,75 @@ void World::integrate() {
 // sphere-cylinder.
 void World::collide() {
     const size_t n = bodies.size();
+
+    // 1. Detect: build a constraint per overlapping pair. Deterministic i<j order.
+    std::vector<Constraint> cons;
     for (size_t i = 0; i < n; ++i) {
         Body& a = bodies[i];
         for (size_t j = i + 1; j < n; ++j) {
             Body& b = bodies[j];
             if (a.invMass + b.invMass <= 0.0) continue;
+            Contact c = detectContact(a, b, box);
+            if (!c.hit) continue;
+            Constraint k;
+            k.i = i; k.j = j; k.n = c.normal; k.overlap = c.overlap;
+            k.rA = box.minImage(c.point - a.x);
+            k.rB = box.minImage(c.point - b.x);
+            // Restitution bias from the approach speed at contact.
+            V3 vc = (a.v + a.w.cross(k.rA)) - (b.v + b.w.cross(k.rB));
+            double vn = vc.dot(k.n);
+            k.restBias = (vn < -kRestitutionSlop) ? -restitution * vn : 0.0;
+            cons.push_back(k);
+        }
+    }
 
-            const bool sphereCyl =
-                (a.isSphere() && b.shape == Shape::Cylinder) ||
-                (b.isSphere() && a.shape == Shape::Cylinder);
-
-            if (a.isSphere() && b.isSphere()) {
-                // Sphere-sphere: fast analytic path (contact on the line of
-                // centres, no spin), through the same general resolver.
-                V3 d = box.minImage(a.x - b.x);           // b -> a, nearest image
-                double sumR = a.radius + b.radius;
-                double dist2 = d.norm2();
-                if (dist2 >= sumR * sumR || dist2 < 1e-18) continue;
-                double dist = std::sqrt(dist2);
-                V3 normal = d / dist;                      // b -> a
-                resolveContact(a, b, normal * (-a.radius), normal * (b.radius),
-                               normal, restitution, friction);
-                correctPenetration(a, b, normal, sumR - dist, contactBeta);
-            } else if (sphereCyl) {
-                // Sphere-cylinder: exact analytic narrow phase (sphere = A so the
-                // normal points from the cylinder toward the sphere).
-                Body& sph = a.isSphere() ? a : b;
-                Body& cyl = a.isSphere() ? b : a;
-                Contact c = sphereVsCylinder(sph, cyl, box);
-                if (!c.hit) continue;
-                resolveContact(sph, cyl, c.point - sph.x, box.minImage(c.point - cyl.x),
-                               c.normal, restitution, friction);
-                double invSum = sph.invMass + cyl.invMass;
-                if (invSum > 0.0) {
-                    V3 corr = c.normal * (contactBeta * c.overlap / invSum);
-                    sph.x += corr * sph.invMass;
-                    cyl.x -= corr * cyl.invMass;
-                }
-            } else {
-                // Everything else (box-*, cylinder-cylinder): general convex
-                // contact via GJK + EPA. Normal points from B (=bodies[j]) to A.
-                Contact c = convexContact(a, b, box);
-                if (!c.hit) continue;
-                resolveContact(a, b, box.minImage(c.point - a.x),
-                               box.minImage(c.point - b.x), c.normal, restitution, friction);
-                double invSum = a.invMass + b.invMass;
-                if (invSum > 0.0) {
-                    V3 corr = c.normal * (contactBeta * c.overlap / invSum);
-                    a.x += corr * a.invMass;
-                    b.x -= corr * b.invMass;
+    // 2. Velocity solve: sequential impulse with accumulated clamping. Several
+    // iterations so simultaneous contacts on one body settle consistently.
+    const int kIters = 8;
+    for (int it = 0; it < kIters; ++it) {
+        for (Constraint& k : cons) {
+            Body& a = bodies[k.i];
+            Body& b = bodies[k.j];
+            // Normal impulse toward the target separating speed (restBias).
+            V3 vc = (a.v + a.w.cross(k.rA)) - (b.v + b.w.cross(k.rB));
+            double vn = vc.dot(k.n);
+            double Kn = effMass(a, b, k.rA, k.rB, k.n);
+            if (Kn > 1e-18) {
+                double dj = (k.restBias - vn) / Kn;
+                double old = k.nImp;
+                k.nImp = (old + dj > 0.0) ? old + dj : 0.0;   // clamp >= 0
+                dj = k.nImp - old;
+                V3 J = k.n * dj;
+                a.v += J * a.invMass; a.w += a.applyInvInertiaWorld(k.rA.cross(J));
+                b.v -= J * b.invMass; b.w -= b.applyInvInertiaWorld(k.rB.cross(J));
+            }
+            // Friction: oppose tangential velocity, clamped to the Coulomb cone.
+            if (friction > 0.0 && k.nImp > 0.0) {
+                V3 vc2 = (a.v + a.w.cross(k.rA)) - (b.v + b.w.cross(k.rB));
+                V3 vt = vc2 - k.n * vc2.dot(k.n);
+                double vtl = vt.norm();
+                if (vtl > 1e-12) {
+                    V3 t = vt / vtl;
+                    double Kt = effMass(a, b, k.rA, k.rB, t);
+                    if (Kt > 1e-18) {
+                        double djt = -vtl / Kt;
+                        double maxF = friction * k.nImp;
+                        double old = k.tImp;
+                        double sum = old + djt;
+                        k.tImp = (sum < -maxF) ? -maxF : (sum > maxF ? maxF : sum);
+                        djt = k.tImp - old;
+                        V3 Jt = t * djt;
+                        a.v += Jt * a.invMass; a.w += a.applyInvInertiaWorld(k.rA.cross(Jt));
+                        b.v -= Jt * b.invMass; b.w -= b.applyInvInertiaWorld(k.rB.cross(Jt));
+                    }
                 }
             }
         }
     }
+
+    // 3. Positional correction (geometric, energy-neutral).
+    for (const Constraint& k : cons)
+        correctPenetration(bodies[k.i], bodies[k.j], k.n, k.overlap, contactBeta);
 }
 
 // Reflective walls at +-half. A sphere whose surface crosses a wall has that
