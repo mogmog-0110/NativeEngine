@@ -211,6 +211,61 @@ void test_periodic_conservation() {
 }
 
 // ---------------------------------------------------------------------------
+// 7b. Translation equivariance: a periodic world has NO special origin. Shift
+//     every body by an arbitrary vector (wrapped) and the dynamics must be
+//     identical -- positions shift by the same vector, velocities unchanged.
+//     This is the defining symmetry of PBC; a position-dependent bug (e.g. a
+//     wrap/min-image mismatch) breaks it even when momentum is still conserved.
+//     Brute-force pairing so the constraint order is position-independent, so
+//     the check holds to floating-point tolerance rather than being masked.
+// ---------------------------------------------------------------------------
+void test_periodic_translation_invariance() {
+    const V3 s{3.1, -2.7, 5.3};
+    World w = makeGas(true);
+    w.forceBruteForce = true;
+    World w2 = w;
+    for (Body& b : w2.bodies) b.x = w2.box.wrap(b.x + s);
+    double maxErr = 0.0;
+    for (int step = 0; step < 40; ++step) {
+        w.step();
+        w2.step();
+        for (size_t i = 0; i < w.bodies.size(); ++i) {
+            V3 expected = w.box.wrap(w.bodies[i].x + s);
+            maxErr = std::max(maxErr, w.box.minImage(w2.bodies[i].x - expected).norm());
+            maxErr = std::max(maxErr, (w2.bodies[i].v - w.bodies[i].v).norm());
+        }
+    }
+    check(maxErr < 1e-6, "periodic: dynamics invariant under a global shift");
+}
+
+// ---------------------------------------------------------------------------
+// 7c. A collision straddling the boundary must be IDENTICAL to the same
+//     collision in free space -- the minimum-image contact is real physics,
+//     not an approximation. Two equal spheres meet head-on across the +x/-x
+//     faces; e=1 exchanges their velocities exactly, matching a free-space run.
+// ---------------------------------------------------------------------------
+void test_cross_boundary_collision() {
+    auto run = [](bool periodic) {
+        World w;
+        w.dt = 1.0 / 240.0; w.restitution = 1.0; w.box.periodic = periodic;
+        w.box.half = periodic ? 5.0 : 50.0;
+        Body a = makeSphere(0, periodic ? V3{4.4, 0, 0} : V3{-0.6, 0, 0}, 0.5, 1.0);
+        Body b = makeSphere(1, periodic ? V3{-4.4, 0, 0} : V3{0.6, 0, 0}, 0.5, 1.0);
+        a.v = V3{1.0, 0, 0};
+        b.v = V3{-1.0, 0, 0};
+        w.bodies = {a, b};
+        for (int step = 0; step < 400; ++step) w.step();
+        return w;
+    };
+    World fp = run(false), pr = run(true);
+    check(close(pr.bodies[0].v.x, fp.bodies[0].v.x, 1e-9) &&
+          close(pr.bodies[1].v.x, fp.bodies[1].v.x, 1e-9),
+          "periodic: cross-boundary collision equals free space");
+    check(close(pr.bodies[0].v.x, -1.0, 1e-6) && close(pr.bodies[1].v.x, 1.0, 1e-6),
+          "periodic: cross-boundary head-on exchanges velocity");
+}
+
+// ---------------------------------------------------------------------------
 // 8. Off-centre contact impulse: conserves linear momentum, angular momentum
 //    (about the origin), and energy at e=1, AND actually imparts spin. This is
 //    the foundation for flat-cap cylinder contacts.
@@ -778,6 +833,8 @@ int runSelftest() {
     test_wall_gas();
     test_determinism();
     test_periodic_conservation();
+    test_periodic_translation_invariance();
+    test_cross_boundary_collision();
     test_offcentre_impulse();
     test_sphere_cylinder_geometry();
     test_sphere_cylinder_dynamics();
