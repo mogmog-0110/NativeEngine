@@ -2,6 +2,7 @@
 #ifndef NATIVEENGINE_PHYSICS_WORLD_HPP
 #define NATIVEENGINE_PHYSICS_WORLD_HPP
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -140,6 +141,15 @@ public:
         auto it = slot_.find(h);
         if (it == slot_.end()) return;
         size_t s = it->second, last = w_.bodies.size() - 1;
+        // Keep per-pair collision-exclusion indices valid across the swap-and-pop:
+        // drop every reference to the removed body (index s), and remap references
+        // to the mover (index last) onto its new home (index s).
+        for (Body& b : w_.bodies) {
+            auto& nc = b.noCollide;
+            nc.erase(std::remove(nc.begin(), nc.end(), (std::uint32_t)s), nc.end());
+            if (s != last)
+                for (std::uint32_t& e : nc) if (e == (std::uint32_t)last) e = (std::uint32_t)s;
+        }
         if (s != last) {                       // swap-and-pop, keep handles valid
             w_.bodies[s] = w_.bodies[last];
             BodyId moved = handle_[last];
@@ -149,6 +159,18 @@ public:
         w_.bodies.pop_back();
         handle_.pop_back();
         slot_.erase(it);
+    }
+
+    // Exclude a specific PAIR from ever colliding (a bonded/jointed pair, or two
+    // adjacent ragdoll limbs). Symmetric and idempotent; unrelated pairs are
+    // unaffected, so a cylinder bonded on one cap still collides with other
+    // spheres. Layer/mask stays the coarse filter; this is the per-pair one.
+    void ignoreCollision(BodyId a, BodyId b) {
+        if (a == b) return;
+        auto ia = slot_.find(a), ib = slot_.find(b);
+        if (ia == slot_.end() || ib == slot_.end()) return;
+        addNoCollide(w_.bodies[ia->second].noCollide, (std::uint32_t)ib->second);
+        addNoCollide(w_.bodies[ib->second].noCollide, (std::uint32_t)ia->second);
     }
 
     // --- joints ---
@@ -399,6 +421,9 @@ private:
         handle_.push_back(h);
         w_.bodies.push_back(b);
         return h;
+    }
+    static void addNoCollide(std::vector<std::uint32_t>& list, std::uint32_t idx) {
+        if (std::find(list.begin(), list.end(), idx) == list.end()) list.push_back(idx);
     }
     Body* body(BodyId h) {
         auto it = slot_.find(h);

@@ -87,6 +87,13 @@ struct Body {
     std::uint32_t layer = 0;
     std::uint32_t mask = 0xFFFFFFFFu;
 
+    // Per-PAIR collision exclusion: indices (into World::bodies) of bodies this
+    // one never collides with -- its joint/bond partners, or adjacent ragdoll
+    // limbs. Typically <=2 entries. Both bodies of an excluded pair list each
+    // other; PhysicsWorld::ignoreCollision sets it and keeps the indices valid
+    // across body removal. Layer/mask is the coarse filter; this is the fine one.
+    std::vector<std::uint32_t> noCollide;
+
     // Opaque handle for the embedder to map a body back to its gameplay entity;
     // surfaced in contact/query results. The engine never interprets it.
     std::uint64_t userData = 0;

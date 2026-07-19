@@ -94,6 +94,13 @@ public:
     static bool layersCollide(const Body& a, const Body& b) {
         return (a.mask & (1u << (b.layer & 31u))) && (b.mask & (1u << (a.layer & 31u)));
     }
+    // Per-pair filter: true if body `a` is set to never collide with body index
+    // `jIndex` (bond/joint partner). Symmetric by construction, so one side is
+    // enough; the list is tiny (<=2) so the linear scan is free.
+    static bool pairExcluded(const Body& a, std::uint32_t jIndex) {
+        for (std::uint32_t k : a.noCollide) if (k == jIndex) return true;
+        return false;
+    }
 
     // Sleeping thresholds. A dynamic body below sleepLinVel/sleepAngVel for
     // sleepTime seconds sleeps; a contact with an awake partner faster than

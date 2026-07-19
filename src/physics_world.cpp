@@ -240,6 +240,7 @@ void PhysicsWorld::processContacts() {
             // Skip only if there is nothing to report: two immovable solids.
             if (!anySensor && B[i].invMass + B[j].invMass <= 0.0) continue;
             if (!World::layersCollide(B[i], B[j])) continue;
+            if (World::pairExcluded(B[i], (std::uint32_t)j)) continue;   // bonded/jointed pair
             Contact c = detectContact(B[i], B[j], w_.box);
             if (!c.hit) continue;
 

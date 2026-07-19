@@ -875,6 +875,51 @@ void test_collision_layers() {
     check(finalVx(false) < 0.0, "layers: default masks collide (velocity reverses)");
 }
 
+void test_pair_exclusion() {
+    // Two spheres head-on. With the pair excluded they pass through; the same
+    // exclusion must NOT stop either from colliding with a third body. Also
+    // check remove() keeps the indices valid.
+    auto passThrough = [](bool exclude) {
+        PhysicsWorld pw;
+        pw.setBox(100.0, false); pw.setTimestep(1.0 / 240.0); pw.setRestitution(1.0);
+        BodyId a = pw.addSphere(V3{-2, 0, 0}, 0.5, 1.0);
+        BodyId b = pw.addSphere(V3{2, 0, 0}, 0.5, 1.0);
+        pw.setVelocity(a, V3{2, 0, 0}); pw.setVelocity(b, V3{-2, 0, 0});
+        if (exclude) pw.ignoreCollision(a, b);
+        for (int s = 0; s < 300; ++s) pw.step();
+        return pw.velocity(a).x;
+    };
+    check(close(passThrough(true), 2.0, 1e-9), "pairExcl: excluded pair passes through");
+    check(passThrough(false) < 0.0, "pairExcl: un-excluded pair still collides");
+
+    // excluding a<->b must leave a<->c colliding (per-pair, not per-body).
+    {
+        PhysicsWorld pw;
+        pw.setBox(100.0, false); pw.setTimestep(1.0 / 240.0); pw.setRestitution(1.0);
+        BodyId a = pw.addSphere(V3{-2, 0, 0}, 0.5, 1.0);
+        BodyId b = pw.addSphere(V3{2, 0, 0}, 0.5, 1.0);   // moving away from a
+        BodyId c = pw.addSphere(V3{-6, 0, 0}, 0.5, 1.0);  // chases a from behind
+        pw.setVelocity(a, V3{-2, 0, 0}); pw.setVelocity(b, V3{2, 0, 0}); pw.setVelocity(c, V3{2, 0, 0});
+        pw.ignoreCollision(a, b);
+        for (int s = 0; s < 300; ++s) pw.step();
+        check(pw.velocity(a).x > 0.0, "pairExcl: excluding a-b leaves a-c colliding");
+    }
+
+    // remove() must repair the exclusion indices under swap-and-pop.
+    {
+        PhysicsWorld pw;
+        pw.setBox(100.0, false); pw.setTimestep(1.0 / 240.0); pw.setRestitution(1.0);
+        BodyId a = pw.addSphere(V3{-2, 0, 0}, 0.5, 1.0);
+        BodyId b = pw.addSphere(V3{2, 0, 0}, 0.5, 1.0);
+        BodyId dummy = pw.addSphere(V3{0, 50, 0}, 0.5, 1.0);
+        pw.setVelocity(a, V3{2, 0, 0}); pw.setVelocity(b, V3{-2, 0, 0});
+        pw.ignoreCollision(a, b);
+        pw.remove(dummy);                                  // swaps indices under a/b
+        for (int s = 0; s < 300; ++s) pw.step();
+        check(close(pw.velocity(a).x, 2.0, 1e-9), "pairExcl: exclusion survives body removal");
+    }
+}
+
 void test_userdata() {
     PhysicsWorld pw;
     pw.setBox(100.0, false); pw.setTimestep(1.0 / 240.0); pw.setRestitution(1.0);
@@ -1357,6 +1402,7 @@ int runSelftest() {
     test_per_body_material();
     test_damping();
     test_collision_layers();
+    test_pair_exclusion();
     test_userdata();
     test_kinematic();
     test_contact_events();
