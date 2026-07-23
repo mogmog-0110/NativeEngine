@@ -1,112 +1,124 @@
-# NativeEngine — a deterministic rigid-body engine with native periodic boundaries
+# NativeEngine
 
-A from-scratch, dependency-free C++ rigid-body physics engine built to do the one
-thing no off-the-shelf engine offers together: **hard, momentum-conserving
-rigid-body contact AND a native periodic boundary**. Game engines
-(PhysX/Bullet/MuJoCo/Jolt/ODE) have hard contact but cannot represent a periodic
-world — one transform, one AABB, no lattice slot on constraints. MD/DEM codes
-have periodic boundaries but soften the contact into a penalty potential. This
-engine keeps the game-engine rigid-body method and puts the toroidal topology
-into the distance function itself (minimum image), with no ghost bodies.
+周期境界をそのまま扱える剛体物理エンジン。C++17、外部依存なし (MSVC でビルド)。
 
-It is a standalone project (no dependency on any other repo). It is designed to
-embed in **MitiruEngine** as a physics backend (see `mitiru/INTEGRATION.md`), and
-its science-facing use (a coarse-grained macrocycle self-assembly study) lives in
-the consuming project as a bridge — the engine itself knows nothing about it.
+ゲーム系の物理エンジン (PhysX / Bullet / Jolt / ODE) は硬い接触を解くが、世界の端が
+反対側に繋がる周期境界は表現できない。剛体が持つのは姿勢 1 つと AABB 1 つで、拘束に
+「どの格子像と接触しているか」を載せる場所がないため。分子動力学や DEM のコードは
+周期境界を持つが、接触をポテンシャルに緩めて解く。
 
-## Features
+このエンジンはゲーム系の逐次インパルス法をそのまま使い、トーラス構造を距離関数の側
+(minimum image) に入れた。ゴースト剛体は作らない。端をまたいだ接触も 1 つの剛体対として解く。
 
-- **Shapes:** sphere, box, flat-cap cylinder — one convex path (analytic for
-  sphere-sphere / sphere-cylinder, GJK + EPA otherwise; box support = one line).
-- **Contact:** hard impulse with restitution, Coulomb **friction**, an iterative
-  sequential-impulse solver with restitution slop; **box-box clipping manifolds**
-  so boxes rest flat and **stack**.
-- **Forces:** gravity; **distance joints** — rigid rod and spring-damper.
-- **Boundaries:** **native periodic** (minimum image, cross-boundary collisions,
-  no ghosts) and reflective walls.
-- **Performance:** **sleeping** (settled bodies stop integrating, wake on
-  interaction) and a PBC-aware **uniform-grid broadphase** (bit-identical to the
-  O(N^2) scan).
-- **Determinism:** bit-for-bit for a given build, by construction (fixed
-  evaluation order) — not reconstructed via single-threading + stable sorts.
-- **API:** a handle-based `PhysicsWorld` (create/remove, pose get/set, impulse,
-  contact events) and a MitiruEngine-facing `NativePhysicsWorld` speaking sgc
-  types.
+周期境界を切れば普通のゲーム物理としても使える。単体で完結していて、他のリポジトリに依存しない。
 
-## Layout
+## 機能
+
+- 形状: 球、箱、円柱、カプセル、凸包、平面、静的三角形メッシュ + ハイトフィールド
+  (BVH ミッドフェーズ)、複合形状
+- 剛体: 動的 / 静的 / キネマティック、材質 (摩擦・反発、combine mode)、減衰、重力スケール、
+  レイヤ + マスク、userData、島単位のスリープ、CCD
+- ソルバ: 逐次インパルス (法線 + クーロン摩擦)、ウォームスタート、反発の slop。
+  箱同士はクリッピングによる多点マニフォールドなので平置きで安定し、積める
+- 境界: ネイティブ周期境界、反射壁、開いた地面
+- 拘束: 距離 (剛体ロッド / ばねダンパ)、ボール、ヒンジ、固定、スライダ。可動域制限・
+  モータ・破断つき
+- クエリ: レイキャスト、オーバーラップ、スフィアキャスト (周期境界とレイヤを考慮)
+- ゲームプレイ向け: トリガ (enter/stay/exit)、接触イベント (begin/stay/end)、
+  キネマティックカプセルのキャラクタコントローラ (collide-and-slide、接地判定、斜面)
+- 組み込み向け: デバッグ描画フック、描画補間、状態のスナップショット保存 / 復元、
+  力・トルク・撃力の API、ハンドルベースのファサード
+
+## 検証
+
+    build\NativeEngine.exe --selftest        # 169 / 169
+
+- 周期境界: 並進不変性、端をまたいだ衝突が自由空間での衝突と一致すること、運動量と
+  エネルギーの保存 — いずれも機械精度で一致する
+- 決定性: 同じビルド・同じ入力ならビット単位で一致する。評価順を固定した結果であって、
+  シングルスレッド化と安定ソートで後から辻褄を合わせたものではない
+- ブロードフェーズ: 周期境界対応の一様格子が O(N²) 総当たりとビット一致する
+
+## ビルド
+
+    build.bat                                # コア + selftest
+
+VS 2022 だけあればよい。外部 SDK は要らない。
+
+## ビジュアルデバッガ
+
+エンジンを実時間で回しながら中を見るビューア (録画の再生ではない)。Dear ImGui の UI に
+シーン階層、剛体ごとのインスペクタ、統計 (FPS、剛体数、接触数、運動エネルギーのプロット)、
+3D オーバーレイ (速度ベクトル、接触点と法線、AABB、選択強調、周期境界のゴースト像) が乗る。
+剛体をクリックすると選択して姿勢や速度をその場で編集できる。
+
+    viewer\build_viewer.bat
+    build\NativeViewer.exe 1      # 1 ピラミッド 2 壁+ボール 3 ドミノ 4 球の山
+                                  # 5 円柱の山 6 ロープ 7 弾性気体 8 周期気体 9 周期ペア
+
+`1`-`9` シーン切替 / `n` 次 / `r` リセット / `d` 剛体を落とす / `space` 一時停止 /
+`,` `.` 速度 / `h` カメラを戻す / 左ドラッグで回転 / ホイールでズーム / クリックで選択。
+すべて UI からも操作できる。
+
+freeglut が要る (`FREEGLUT_ROOT`、既定は `E:\dev\freeglut`)。Dear ImGui は
+`viewer/third_party/imgui` に同梱 (MIT、同ディレクトリの `LICENSE.txt`)。
+
+## 使い方
+
+`PhysicsWorld` はハンドルベースで、剛体は整数の `BodyId` で扱う。
+
+```cpp
+#include "physics_world.hpp"
+
+ne::PhysicsWorld w;
+w.setGravity({0.0, -9.81, 0.0});
+w.setTimestep(1.0 / 60.0);
+w.setOpenBoundary(true);       // 壁の無い普通の世界 (既定は反射壁の箱)
+w.setRestitution(0.2);         // 既定の材質は完全弾性・摩擦 0 なので落ちても止まらない
+w.setFriction(0.5);
+
+w.makeStatic(w.addBox({0.0, -1.0, 0.0}, {}, {50.0, 1.0, 50.0}, 1.0));
+ne::BodyId ball = w.addSphere({0.0, 10.0, 0.0}, 0.5, 1.0);
+
+for (int i = 0; i < 600; ++i) w.step();
+ne::V3 p = w.position(ball);   // 床の上で静止 (y = 0.489)
+
+w.setBox(25.0, true);          // 端が反対側に繋がる世界にする場合
+```
+
+接触イベント、レイキャスト、拘束、キャラクタコントローラも同じファサードから触る。
+
+## 構成
 
 ```
 src/
-  vmath.hpp        double Vec3 / quaternion, orientation integration
-  body.hpp         rigid body + sphere/box/cylinder factories, bounding radius
-  box.hpp          periodic/reflective box: minimum image + wrap
-  gjk.hpp          support functions + GJK overlap
-  epa.hpp          EPA penetration depth + contact point
-  narrowphase.hpp  analytic sphere-cylinder
-  manifold.hpp     box-box clipping manifold
-  detect.hpp       unified narrow-phase dispatch
-  contact.hpp      impulse resolver (normal + friction) + effective mass
-  world.hpp/.cpp   integrator, solver, joints, broadphase, sleeping, boundaries
-  physics_world.hpp/.cpp   handle-based facade + contact events
-  selftest.cpp     86 physics unit tests
-viewer/
-  viewer.cpp       LIVE interactive demo viewer (steps the engine in real time)
-  gl_core.hpp      OpenGL 3.3 core loader; glmath.hpp   float math for rendering
-  build_viewer.bat freeglut + modern GL (instanced Blinn-Phong, MSAA)
-mitiru/
-  native_physics_world.hpp    sgc-typed MitiruEngine backend + Null stub
-  native_physics_system.hpp   scene::ISystem adapter (drop-in)
-  INTEGRATION.md              CMake + usage
+  vmath.hpp        double の Vec3 / 四元数、姿勢の積分
+  body.hpp         剛体と各形状のファクトリ、外接半径
+  box.hpp          周期 / 反射の箱: minimum image と巻き戻し
+  gjk.hpp epa.hpp  support 関数 + GJK 交差判定、EPA による貫通深さと接触点
+  narrowphase.hpp  球-円柱の解析解
+  manifold.hpp     箱-箱のクリッピングマニフォールド
+  detect.hpp       ナローフェーズの振り分け
+  contact.hpp      撃力の解決 (法線 + 摩擦)、有効質量
+  queries.hpp      レイキャスト / オーバーラップ / スフィアキャスト
+  character.hpp    カプセルのキャラクタコントローラ
+  mesh.hpp         三角形メッシュ / ハイトフィールドと BVH
+  world.hpp/.cpp   積分、ソルバ、拘束、ブロードフェーズ、スリープ、境界
+  physics_world.hpp/.cpp   ハンドルベースのファサードと接触イベント
+  selftest.cpp     物理のユニットテスト
+viewer/            ImGui のビジュアルデバッガ (OpenGL 3.3)
+mitiru/            MitiruEngine 向け sgc 型バインディングと組み込み手順
 ```
 
-## Build & test
+## 現状の制約
 
-    build.bat
-    build\NativeEngine.exe --selftest        # 86/86 physics tests
+- レイキャストはメッシュ / 凸包 / 平面をまだ見ない (球・箱・円柱・カプセルのみ)
+- 多点マニフォールドは箱-箱のみ。それ以外は単点接触をウォームスタートで安定させている
+- 凸包と複合形状の慣性テンソルは近似 (頂点 AABB / 平行軸の対角化)。極端に非対称な
+  剛体では実物とずれる
+- ソルバはシングルスレッド。決定性を既定にしているため
 
-MitiruEngine binding (via the sgc shim):
+## ライセンス
 
-    mitiru\build_binding_test.bat  &&  build\test_binding.exe        # 5/5
-
-Core + selftest + binding require only MSVC (VS 2022) — no external SDK.
-
-## Visual Debugger
-
-A live, interactive debugger in the spirit of the PhysX Visual Debugger: it
-**steps the engine in real time** (not a recording) inside a Dear ImGui UI —
-simulation controls, a scene hierarchy, a per-body inspector, live statistics
-(FPS, body / contact counts, energy + momentum with a KE plot), and 3D debug
-overlays (velocity arrows, **contact points + normals**, AABBs, selection
-highlight, periodic ghost images). Click a body to select and inspect it, and
-edit its pose / velocity live. Requires freeglut (`FREEGLUT_ROOT`, default
-`E:\dev\freeglut`); Dear ImGui is vendored under `viewer/third_party/imgui`
-(MIT — see its `LICENSE.txt`).
-
-    viewer\build_viewer.bat
-    build\NativeViewer.exe 1        # 1 pyramid  2 brick-wall+ball  3 dominoes
-                                    # 4 sphere pile  5 cylinder pile  6 rope
-                                    # 7 elastic gas (box)  8 PERIODIC gas  9 PERIODIC pair
-
-Keys: `1`-`9` scene · `n` next · `r` reset · `d` drop a body · `space` pause ·
-`,`/`.` sim speed · `h` recenter camera · left-drag orbit · wheel zoom · click to
-pick. Everything is also on the UI panels.
-
-## Status
-
-Full game-physics feature surface, complete and tested (164 selftests + 5 binding
-tests + a live visual debugger). See `ROADMAP.md` for the tiered breakdown.
-
-- **Shapes:** sphere, box, cylinder, capsule, convex hull, plane, static triangle
-  mesh + heightfield (BVH), compound.
-- **Bodies:** dynamic / static / kinematic; per-body material, damping, gravity
-  scale, layers+masks, userData, sleeping (island-based), CCD.
-- **Queries:** raycast, overlap, sphere-cast.
-- **Joints:** distance, ball, hinge, fixed, slider (+ limits, motors, breakable).
-- **Gameplay:** trigger/sensor + contact events (enter/stay/exit, begin/stay/end),
-  a kinematic capsule character controller.
-- **Integration:** debug-draw hook, render interpolation, snapshot save/load,
-  full force API; MitiruEngine `sgc` binding.
-- **Differentiators kept intact:** native periodic boundaries, bit-for-bit determinism.
-
-The macrocycle science use (reproduce the PhysX reflective results, then run the
-native-PBC experiment) lives in the consuming project as a bridge.
+ソースの閲覧と利用は自由、改変とライブラリとしての再配布は不可。詳細は `LICENSE`。
+`viewer/third_party/imgui` の Dear ImGui は MIT (同梱の `LICENSE.txt`)。

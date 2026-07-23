@@ -17,10 +17,10 @@ namespace ne {
 // Embeddable game-facing facade over World.
 //
 // Games create and destroy bodies at runtime, so they need STABLE handles, not
-// vector indices that shift on removal. This mirrors the shape MitiruEngine's
-// backends expose (cf. JoltPhysicsWorld): integer BodyId handles, create/remove,
-// pose get/set, impulse, and a contact callback. The heavy solver stays in
-// World; this layer only owns the handle bookkeeping.
+// vector indices that shift on removal. The shape mirrors what game engines
+// expose for a physics backend: integer BodyId handles, create/remove, pose
+// get/set, impulse, and a contact callback. The heavy solver stays in World;
+// this layer only owns the handle bookkeeping.
 using BodyId = std::uint32_t;
 inline constexpr BodyId kInvalidBody = 0;
 
@@ -46,6 +46,9 @@ class PhysicsWorld {
 public:
     // --- configuration (forwarded to the solver) ---
     void setBox(double half, bool periodic) { w_.box.half = half; w_.box.periodic = periodic; }
+    // Drop the reflective walls: bodies rest on a ground body and may fall off
+    // its edges (the normal game setup). Ignored while the box is periodic.
+    void setOpenBoundary(bool on) { w_.openBoundary = on; }
     void setTimestep(double dt) { w_.dt = dt; }
     void setRestitution(double e) { w_.restitution = e; }
     void setFriction(double mu) { w_.friction = mu; }

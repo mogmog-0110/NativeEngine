@@ -105,6 +105,7 @@ public:
     void setFriction(float mu) { pw_.setFriction(mu); }
     void setSleepEnabled(bool on) { pw_.setSleepEnabled(on); }
     void setPeriodicBox(float half, bool periodic) { pw_.setBox(half, periodic); }   // NATIVE PBC
+    void setOpenBoundary(bool on) { pw_.setOpenBoundary(on); }                       // no reflective walls
 
     // ---- body creation ----
     BodyId createSphere(const sgc::Vec3f& p, float r, float density) { return pw_.addSphere(toNe(p), r, density); }
@@ -281,6 +282,7 @@ public:
     void setFriction(float) {}
     void setSleepEnabled(bool) {}
     void setPeriodicBox(float, bool) {}
+    void setOpenBoundary(bool) {}
     BodyId createSphere(const sgc::Vec3f&, float, float) { return kInvalidBody; }
     BodyId createBox(const sgc::Vec3f&, const sgc::Quaternionf&, const sgc::Vec3f&, float) { return kInvalidBody; }
     BodyId createCylinder(const sgc::Vec3f&, const sgc::Quaternionf&, float, float, float) { return kInvalidBody; }
