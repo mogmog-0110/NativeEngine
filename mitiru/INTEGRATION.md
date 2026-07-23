@@ -10,7 +10,7 @@ MitiruEngine backend has: **native periodic boundaries**.
 | File | Role | Standalone-testable |
 |---|---|---|
 | `native_physics_world.hpp` | The backend: sgc-typed `NativePhysicsWorld` mirroring `JoltPhysicsWorld`, + a Null stub under `#else` | Yes (via the sgc shim) |
-| `native_physics_system.hpp` | `scene::ISystem` adapter syncing `TransformComponent` <-> bodies | No (needs MitiruEngine's scene) |
+| `native_physics_system.hpp` | Illustrative `scene::ISystem` adapter. The one actually in use is MitiruEngine's `include/mitiru/physics/NativePhysicsBridge.hpp` — edit that one | No (needs MitiruEngine's scene) |
 | `compat/sgc/math/*.hpp` | Minimal `sgc::Vec3f`/`Quaternionf` stubs for STANDALONE TESTING only | — |
 | `test_binding.cpp` | Proves the conversions round-trip and the sgc API drives a real scene | Yes |
 
@@ -82,31 +82,32 @@ BodyId body = phys.createBody(d);
 - **The POD game-DLL boundary does NOT apply here:** physics is an engine-side
   C++ subsystem, so full C++/templates/sgc types are fine.
 
-## CMake wiring (mirror the Jolt/Box2D submodule pattern, ~lines 643-671)
+## CMake wiring (as shipped in MitiruEngine's root `CMakeLists.txt`)
 
-Add NativeEngine as a submodule under `external/NativeEngine`, then in the root
-`CMakeLists.txt`:
+Two-stage opt-in: `-DMITIRU_USE_NATIVEPHYS=ON` decides whether NativeEngine is
+built at all; linking `mitiru_nativephys` decides which targets can see it.
+Nothing is added to the `mitiru` target itself, so turning the option on does
+not force a rebuild of the engine.
 
 ```cmake
-# --- NativeEngine physics backend (native periodic boundaries) ---
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/NativeEngine/NativeEngine/src/world.cpp")
-  add_library(NativeEngine STATIC
-    external/NativeEngine/NativeEngine/src/world.cpp
-    external/NativeEngine/NativeEngine/src/physics_world.cpp)
-  target_include_directories(NativeEngine PUBLIC
-    external/NativeEngine/NativeEngine/src
-    external/NativeEngine/NativeEngine/mitiru)
+option(MITIRU_USE_NATIVEPHYS "..." OFF)
+set(MITIRU_NATIVEPHYS_ROOT "" CACHE PATH "Path to the NativeEngine repo root")
+if(MITIRU_USE_NATIVEPHYS)
+  # root = MITIRU_NATIVEPHYS_ROOT, else external/NativeEngine, else $ENV{NATIVEENGINE_ROOT}
+  add_library(NativeEngine STATIC "${root}/src/world.cpp" "${root}/src/physics_world.cpp")
+  target_include_directories(NativeEngine PUBLIC "${root}/src")
   target_compile_features(NativeEngine PUBLIC cxx_std_17)
-  target_link_libraries(mitiru ${MITIRU_TARGET_SCOPE} NativeEngine sgc)
-  target_include_directories(mitiru ${MITIRU_TARGET_SCOPE}
-    external/NativeEngine/NativeEngine/mitiru)
-  target_compile_definitions(mitiru ${MITIRU_TARGET_SCOPE} MITIRU_HAS_NATIVEPHYS=1)
+
+  add_library(mitiru_nativephys INTERFACE)
+  target_link_libraries(mitiru_nativephys INTERFACE NativeEngine sgc::sgc)
+  target_include_directories(mitiru_nativephys INTERFACE "${root}/mitiru")
+  target_compile_definitions(mitiru_nativephys INTERFACE MITIRU_HAS_NATIVEPHYS=1)
+  target_compile_features(mitiru_nativephys INTERFACE cxx_std_20)
 endif()
 ```
 
-`NativeEngine` links `sgc` so `native_physics_world.hpp` finds the real sgc
-headers. Always use `${MITIRU_TARGET_SCOPE}` (INTERFACE in header-only mode,
-PUBLIC in static mode), never a hardcoded scope.
+`mitiru_nativephys` links `sgc::sgc` so `native_physics_world.hpp` finds the real
+sgc headers, and requires C++20 because that sgc math uses concepts.
 
 ## Using it from game code
 
@@ -156,22 +157,26 @@ sgc::Vec3f smooth = phys.interpolatedPosition(ball, alpha); // judder-free at fi
 - The `native_physics_system.hpp` component field names are illustrative --
   adjust to the game's actual component; prefer the `BodyDesc` adapter above.
 
-## Status: wired into MitiruEngine (verified end-to-end, 2026-07-18)
+## Status: wired into MitiruEngine (in its test suite, 2026-07-24)
 
-The concrete ECS adapter + CMake wiring now live IN the MitiruEngine repo, on
-branch `feat/nativephys-backend` (additive: two files, existing build untouched):
+The concrete ECS adapter, the CMake wiring and the tests live IN the MitiruEngine
+repo, on branch `feat/nativephys-backend`:
 
 - `include/mitiru/physics/NativePhysicsBridge.hpp` — `physics3d::NativePhysicsSystem`
   (a `scene::ISystem`): maps entities with `RigidBodyComponent3D + TransformComponent`
-  to NativeEngine bodies via `BodyDesc`, fixed-steps, and writes poses back
-  (quaternion -> Euler). Enable with `-DMITIRU_USE_NATIVEPHYS=ON`.
-- Root `CMakeLists.txt` — an opt-in block (`MITIRU_USE_NATIVEPHYS`, default OFF)
-  that builds NativeEngine from a local path and defines `MITIRU_HAS_NATIVEPHYS`.
+  to NativeEngine bodies via `BodyDesc`, fixed-steps, writes poses back
+  (quaternion -> Euler), pushes per-frame material/damping changes, follows
+  kinematic/static transforms, and removes the body when the entity goes away.
+- Root `CMakeLists.txt` — the two-stage opt-in above (default OFF).
+- `tests/mitiru/TestNativePhysicsBridge.cpp` — one source, two targets:
+  `mitiru_tests_core` (backend absent: asserts the system is a true no-op) and
+  `mitiru_tests_nativephys` (backend linked: landing, determinism, periodic
+  wrap-around, body removal). Run: `ctest --test-dir build -C Debug -L nativephys`.
+- `docs/PHYSICS_NATIVE_BACKEND.md` — when to reach for this backend and its limits.
 
-**Verified against the real engine, not a mock:** a `scene::GameWorld` with real
-`TransformComponent` + `RigidBodyComponent3D` entities, driven by the system,
-drops a ball from y=5.0 to rest at y=0.489 on an AABB floor — compiled and run
-against MitiruEngine's actual `include/` + `external/sgc` + NativeEngine (C++20).
+**Verified against the real engine, not a mock:** a real `scene::GameWorld` drops
+a ball from y=5.0 to rest at y=0.489 on an AABB floor; two identical runs agree
+bit-for-bit; with `periodicHalf = 5` a body at +7 m/s wraps to x = -3.03.
 
 **Build note:** MitiruEngine sources are UTF-8 with Japanese comments and require
 `/utf-8`. MitiruEngine's CMake already sets `/utf-8` on the `mitiru` target and,
