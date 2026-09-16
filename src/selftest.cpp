@@ -1,4 +1,4 @@
-#include <cmath>
+﻿#include <cmath>
 #include <cstdio>
 #include <random>
 #include <vector>
@@ -1075,6 +1075,14 @@ void test_queries() {
     RayHit sc = pw.sphereCast(V3{0, 0, 0}, 1.0, V3{1, 0, 0}, 100.0);
     check(sc.hit && sc.body == s1, "sphereCast: sweep hits the sphere");
     check(close(sc.distance, 8.0, 1e-6), "sphereCast: TOI accounts for the swept radius");
+
+    // raycastAllは奥のボディも取りこぼさないことを検証する（raycast()はs1しか返さない）
+    BodyId s2 = pw.addSphere(V3{20, 0, 0}, 1.0, 1.0); pw.makeStatic(s2);
+    auto all = pw.raycastAll(V3{0, 0, 0}, V3{1, 0, 0}, 100.0);
+    check(all.size() == 2, "raycastAll: hits both spheres along the ray");
+    check(all[0].body == s1 && all[1].body == s2, "raycastAll: sorted by increasing distance");
+    check(pw.raycastAll(V3{0, 0, 0}, V3{1, 0, 0}, 5.0).empty(),
+          "raycastAll: respects maxDist (nothing within range)");
 }
 
 void test_general_joints() {

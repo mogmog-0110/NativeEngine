@@ -1,4 +1,4 @@
-#include "physics_world.hpp"
+﻿#include "physics_world.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -161,6 +161,28 @@ RayHit PhysicsWorld::raycast(const V3& origin, const V3& dir, double maxDist,
         }
     }
     return hit;
+}
+
+std::vector<RayHit> PhysicsWorld::raycastAll(const V3& origin, const V3& dir, double maxDist,
+                                             std::uint32_t mask) const {
+    std::vector<RayHit> hits;
+    V3 d = dir.normalized();
+    for (const Body& b : w_.bodies) {
+        if (!layerAllowed(mask, b)) continue;
+        V3 cImg = origin + w_.box.minImage(b.x - origin);
+        double t; V3 p, n;
+        // maxDist を固定で渡す（raycast()のようにbestへ縮めない）ことで、
+        // 手前のヒットの有無に関係なく全ボディを同じ範囲で判定する
+        if (!rayVsBody(b, cImg, origin, d, maxDist, t, p, n)) continue;
+        RayHit hit;
+        hit.hit = true; hit.distance = t; hit.point = p; hit.normal = n;
+        size_t idx = (size_t)(&b - w_.bodies.data());
+        hit.body = handle_[idx]; hit.userData = b.userData;
+        hits.push_back(hit);
+    }
+    std::sort(hits.begin(), hits.end(),
+              [](const RayHit& a, const RayHit& b) { return a.distance < b.distance; });
+    return hits;
 }
 
 std::vector<BodyId> PhysicsWorld::overlapSphere(const V3& center, double radius,

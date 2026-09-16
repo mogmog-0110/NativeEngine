@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #ifndef NATIVEENGINE_PHYSICS_WORLD_HPP
 #define NATIVEENGINE_PHYSICS_WORLD_HPP
 
@@ -347,6 +347,11 @@ public:
     // maxDist. `mask` is the set of layers to test (bit set => layer included).
     RayHit raycast(const V3& origin, const V3& dir, double maxDist,
                    std::uint32_t mask = 0xFFFFFFFFu) const;
+    // raycast()は最近傍1件のみ返すため、複数ヒットが欲しい呼び出し側（貫通弾等）向けに全件版を用意する。
+    // 各ボディの判定上限は常に呼び出し側のmaxDistのままにし、近い方が先に見つかっても縮めない
+    // （raycast()内部のbestのように縮めると、その時点より遠いボディを取りこぼす）
+    std::vector<RayHit> raycastAll(const V3& origin, const V3& dir, double maxDist,
+                                   std::uint32_t mask = 0xFFFFFFFFu) const;
     // All bodies overlapping a query sphere / box (e.g. area-of-effect, placement).
     std::vector<BodyId> overlapSphere(const V3& center, double radius,
                                       std::uint32_t mask = 0xFFFFFFFFu) const;

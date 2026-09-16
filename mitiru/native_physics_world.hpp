@@ -204,6 +204,13 @@ public:
 
     // ---- scene queries (PBC-aware, layer-filtered) ----
     RayHitS raycast(const sgc::Vec3f& o, const sgc::Vec3f& dir, float maxDist, std::uint32_t mask = 0xFFFFFFFFu) const { return toHit(pw_.raycast(toNe(o), toNe(dir), maxDist, mask)); }
+    // raycast()と違い最近傍1件に絞らない全件版（貫通弾等）。距離昇順は下層(ne::PhysicsWorld::raycastAll)が保証する
+    std::vector<RayHitS> raycastAll(const sgc::Vec3f& o, const sgc::Vec3f& dir, float maxDist, std::uint32_t mask = 0xFFFFFFFFu) const {
+        const auto hits = pw_.raycastAll(toNe(o), toNe(dir), maxDist, mask);
+        std::vector<RayHitS> out; out.reserve(hits.size());
+        for (const auto& h : hits) out.push_back(toHit(h));
+        return out;
+    }
     RayHitS sphereCast(const sgc::Vec3f& o, float radius, const sgc::Vec3f& dir, float maxDist, std::uint32_t mask = 0xFFFFFFFFu) const { return toHit(pw_.sphereCast(toNe(o), radius, toNe(dir), maxDist, mask)); }
     std::vector<BodyId> overlapSphere(const sgc::Vec3f& c, float r, std::uint32_t mask = 0xFFFFFFFFu) const { return pw_.overlapSphere(toNe(c), r, mask); }
 
@@ -338,6 +345,7 @@ public:
     void onTriggerStay(ContactFn) {}
     void onTriggerExit(ContactFn) {}
     RayHitS raycast(const sgc::Vec3f&, const sgc::Vec3f&, float, std::uint32_t = 0xFFFFFFFFu) const { return {}; }
+    std::vector<RayHitS> raycastAll(const sgc::Vec3f&, const sgc::Vec3f&, float, std::uint32_t = 0xFFFFFFFFu) const { return {}; }
     RayHitS sphereCast(const sgc::Vec3f&, float, const sgc::Vec3f&, float, std::uint32_t = 0xFFFFFFFFu) const { return {}; }
     std::vector<BodyId> overlapSphere(const sgc::Vec3f&, float, std::uint32_t = 0xFFFFFFFFu) const { return {}; }
     void setDebugContactCapture(bool) {}
